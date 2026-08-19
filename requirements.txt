@@ -1,0 +1,20 @@
+flask==3.0.3
+boto3==1.43.42
+pdf2image==1.17.0
+pillow>=12.3.0
+rapidfuzz==3.14.5
+python-dotenv==1.2.2
+opencv-python
+opencv-python-headless>=4.10
+numpy>=1.26
+imagehash>=4.3
+opencv-contrib-python
+imagehash
+
+# Claim fetching (claimreview/fetch): warehouse access for claim selection and
+# the extracted-table load, plus the per-run XLSX report.
+# psycopg needs the [binary] extra to ship libpq - a bare `psycopg` install
+# raises "no pq wrapper available" at connect time.
+psycopg[binary]>=3.2
+pandas>=2.2
+openpyxl>=3.1

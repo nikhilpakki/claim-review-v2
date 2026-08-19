@@ -1,0 +1,223 @@
+{% extends "base.html" %}
+{% block title %}Fetch claims - Claim Review{% endblock %}
+{% block content %}
+<h1>Fetch claims</h1>
+<p class="hint">
+  Downloads payer and provider claim bundles from client S3 into a local folder, extracts the
+  eight structured datasets, and (optionally) loads them into Redshift. Claims are selected from
+  <code>{{ source_table }}</code>. The destination folder is itself a review root - each claim
+  lands in its own subfolder - so a finished fetch hands straight over to processing.
+</p>
+
+{% if unavailable %}
+<div class="notice notice-error">
+  <strong>Claim fetching is unavailable.</strong>
+  It needs <code>psycopg[binary]</code>, <code>pandas</code> and <code>openpyxl</code>:
+  run <code>pip install -r requirements.txt</code>, then restart the app.
+  <span class="hint">({{ unavailable }})</span>
+</div>
+{% elif not warehouse_configured %}
+<div class="notice notice-warn">
+  <strong>No warehouse configured.</strong>
+  Set <code>REDSHIFT_HOST</code> / <code>REDSHIFT_DB</code> / <code>REDSHIFT_USER</code> /
+  <code>REDSHIFT_PASSWORD</code> in <code>.env</code> (the pipeline's <code>DB_*</code> names work too),
+  then restart the app.
+</div>
+{% endif %}
+
+<form id="fetch-form" class="settings-form" autocomplete="off">
+  <fieldset class="settings-group">
+    <legend>Which claims</legend>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="radio" name="source" value="latest" checked>
+        <span>Latest claims</span>
+      </label>
+      <div class="fetch-subfield" data-for="latest">
+        <label for="field-limit">How many</label>
+        <input type="text" id="field-limit" name="limit" value="{{ default_limit }}" size="10">
+        <p class="settings-help">
+          Most recent first, by <code>last_insert_dt</code>. Enter a number, or
+          <code>all</code> / <code>none</code> / <code>false</code> for no cap.
+        </p>
+      </div>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="radio" name="source" value="ids">
+        <span>Specific registration IDs</span>
+      </label>
+      <div class="fetch-subfield" data-for="ids" hidden>
+        <textarea id="field-claim-ids" name="claim_ids" rows="5"
+                  placeholder="2026062810007810&#10;2026063010026574&#10;..."></textarea>
+        <p class="settings-help">
+          One per line, or comma-separated. Full case IDs
+          (<code>PMJAY/UK/S/2026/R4/2026070810062219</code>) are trimmed to the trailing ID.
+        </p>
+        <label for="field-claims-csv">...or upload a CSV</label>
+        <input type="file" id="field-claims-csv" name="claims_csv" accept=".csv,text/csv">
+        <p class="settings-help">
+          Uses a <code>registration_id</code> column if present, otherwise the first column.
+          Merged with anything pasted above.
+        </p>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="settings-group">
+    <legend>Filters</legend>
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="convergence">
+        <span>Include non-PMJAY policies (convergence)</span>
+      </label>
+      <p class="settings-help">
+        Off: only <code>policy_code LIKE 'PMJAY%'</code> claims are selected.
+      </p>
+    </div>
+    <div class="settings-field">
+      <label for="field-hospital-type">Hospital type</label>
+      <select id="field-hospital-type" name="hospital_type">
+        <option value="">Default &mdash; no filter</option>
+        {% for code, label in hospital_types %}
+        <option value="{{ code }}">{{ code }} &mdash; {{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="settings-help">Filters on <code>hospital_type</code>. Default applies no condition at all.</p>
+    </div>
+
+    <div class="settings-field">
+      <label for="field-procedure-codes">Procedure codes to include</label>
+      <input type="text" id="field-procedure-codes" name="procedure_codes"
+             placeholder="e.g. MG110|ABC23  or  MG110,ABC23">
+      <p class="settings-help">
+        A claim's <code>procedure_code</code> holds its whole procedure list, pipe-delimited, so both
+        readings are possible:
+        <br><code>MG110|ABC23</code> &mdash; claims with <strong>either</strong> code (alternatives)
+        <br><code>MG110,ABC23</code> &mdash; claims with <strong>both</strong> codes (all required)
+        <br><code>MG110|ABC23,LB001</code> &mdash; (MG110 or ABC23) <strong>and</strong> LB001
+        <br>Each code must match a whole item in that list, so <code>LB05</code> will not match
+        <code>LB055</code>; write <code>LB.*</code> if you do want a prefix. Empty = no filter.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label for="field-exclude-procedure-codes">Procedure codes to exclude</label>
+      <input type="text" id="field-exclude-procedure-codes" name="exclude_procedure_codes"
+             value="{{ default_exclude_codes }}" placeholder="e.g. lm100|xy999">
+      <p class="settings-help">
+        Same syntax, applied as a rejection: <code>A|B</code> drops claims containing
+        <strong>either</strong>, <code>A,B</code> drops only claims containing <strong>both</strong>.
+        Pre-filled with <code>{{ default_exclude_codes }}</code>, which this pipeline has always
+        excluded; clear the box to exclude nothing.
+      </p>
+    </div>
+  </fieldset>
+
+  <fieldset class="settings-group">
+    <legend>Destination and output</legend>
+    <div class="settings-field">
+      <label for="field-destination">Download claims to</label>
+      <div class="path-form">
+        <input type="text" id="field-destination" name="destination" value="{{ default_destination }}">
+        <button type="button" class="btn-secondary" id="browse-toggle">Browse...</button>
+      </div>
+      <p class="settings-help">
+        Bundles land here as <code>&lt;folder&gt;/&lt;registration_id&gt;/{payer,provider}</code>.
+        Re-fetching a claim replaces its folder in place. Files are never deleted by a fetch
+        started here - they are what the review side displays.
+      </p>
+      <div class="fetch-browser" id="fetch-browser" hidden>
+        <div class="breadcrumb" id="fetch-breadcrumb"></div>
+        <ul class="dir-list" id="fetch-dir-list"></ul>
+        <button type="button" id="fetch-use-folder">Use this folder</button>
+      </div>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="load_redshift" {% if load_redshift_default %}checked{% endif %}>
+        <span>Load extracted tables into Redshift</span>
+      </label>
+      <p class="settings-help">
+        Writes the eight <code>claim_bundle_*</code> tables, replacing any existing rows for the
+        same claims. Untick for a files-only pull that touches nothing in the warehouse.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="write_reports" checked>
+        <span>Write run reports (JSON + XLSX)</span>
+      </label>
+      <p class="settings-help">The XLSX report reads the loaded rows, so it is skipped when the Redshift load is off.</p>
+    </div>
+  </fieldset>
+
+  <div class="settings-actions">
+    <button type="button" class="btn-secondary" id="preview-btn">Preview claims</button>
+    <button type="button" id="fetch-btn">Fetch claims</button>
+    <span class="hint" id="fetch-form-status" aria-live="polite"></span>
+  </div>
+</form>
+
+<div class="notice notice-info" id="preview-panel" hidden>
+  <div id="preview-summary"></div>
+  <ul class="hint" id="preview-filters" style="margin:0.4rem 0; padding-left:1.1rem;"></ul>
+  <p class="hint" id="preview-ids"></p>
+  <p class="hint" id="preview-warning"></p>
+</div>
+
+<section class="fetch-run" id="run-panel" hidden>
+  <h3>Run <span id="run-id" class="mono"></span> <span class="badge" id="run-badge"></span></h3>
+  <div class="progress-bar-outer"><div class="progress-bar-inner" id="run-bar"></div></div>
+  <p class="progress-status" id="run-status"></p>
+  <div class="fetch-run-actions" id="run-actions" hidden>
+    <button type="button" id="review-btn">Review these claims</button>
+    <button type="button" class="btn-secondary" id="cancel-btn">Stop after current claims</button>
+  </div>
+  <div class="fetch-columns">
+    <div>
+      <h3>Claims</h3>
+      <ul class="dir-list" id="run-claims"><li class="empty">Waiting for the selection query...</li></ul>
+    </div>
+    <div>
+      <h3>Log</h3>
+      <pre class="fetch-log" id="run-log"></pre>
+    </div>
+  </div>
+</section>
+
+{% if recent_runs %}
+<h3>Recent fetches</h3>
+<ul class="dir-list fetch-history">
+  {% for run in recent_runs %}
+  <li>
+    <div class="fetch-history-row">
+      <span class="mono">{{ run.run_id }}</span>
+      <span class="badge status-{{ 'completed' if run.status == 'completed' else ('running' if run.status == 'running' else ('interrupted' if run.status == 'cancelled' else 'failed')) }}">{{ run.status }}</span>
+      <span class="hint">{{ run.claims_ok }}/{{ run.claims_total }} claims &middot; {{ run.source or '' }}</span>
+      <span class="hint mono">{{ run.destination }}</span>
+      {% if run.claims_total %}
+      <a class="btn-link" href="{{ url_for('claims.list_claims_view', fetch_run=run.run_id) }}">Review</a>
+      {% endif %}
+      {% if run.bundles_deleted_at %}
+        <span class="hint">files deleted</span>
+      {% elif run.claims_ok %}
+        <button type="button" class="btn-link delete-files-btn" data-run-id="{{ run.run_id }}"
+                data-claims="{{ run.claims_ok }}" data-destination="{{ run.destination }}">Delete files</button>
+      {% endif %}
+      <span class="hint delete-status" data-run-id="{{ run.run_id }}"></span>
+    </div>
+    {% if run.error %}<p class="hint">{{ run.error }}</p>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>window.ACTIVE_FETCH_RUN = {{ (active_run_id or '')|tojson }};</script>
+<script src="{{ url_for('static', filename='js/fetch.js') }}"></script>
+{% endblock %}

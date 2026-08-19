@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Claim Review{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('claims.list_claims_view') }}">Claim Review</a>
+    {% if active_root %}
+      <span class="active-root" title="{{ active_root }}">Root: {{ active_root }}</span>
+      <a class="change-root" href="{{ url_for('browse.browse') }}">Change folder</a>
+    {% endif %}
+    <a class="change-root" href="{{ url_for('fetch.fetch_page') }}">Fetch claims</a>
+    <a class="change-root" href="{{ url_for('rules.view_rules') }}{{ here_qs }}">Rules</a>
+    <a class="change-root" href="{{ url_for('settings.view_settings') }}{{ here_qs }}">&#9881; Settings</a>
+  </header>
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

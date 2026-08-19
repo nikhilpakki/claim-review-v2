@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Rules - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ back_url }}">&larr; Back</a>
+<h1>Validation rules</h1>
+<p class="hint">
+  Rules cross-check a claim's documents against the uploaded claims data and against each other.
+  They evaluate live on every claim page and on the home page - no reprocessing needed when you add,
+  edit, or delete a rule, or upload a new dataset. Changes on this page apply immediately, in place.
+</p>
+
+{% include "partials/csv_status.html" %}
+{% include "partials/rule_form.html" %}
+{% include "partials/rules_list.html" %}
+{% endblock %}
+{% block scripts %}
+<script>
+window.initRulesPage = function () {
+  const select = document.getElementById('rule-type');
+  const groups = document.querySelectorAll('.rule-type-fields');
+  function sync() {
+    groups.forEach((g) => { g.style.display = g.dataset.for === select.value ? '' : 'none'; });
+  }
+  if (select) {
+    select.addEventListener('change', sync);
+    sync();
+  }
+
+  const fpCsvToggle = document.getElementById('fp_compare_with_csv');
+  const fpCsvFields = document.querySelector('.fp-csv-fields');
+  const fpKeywordFields = document.querySelector('.fp-keyword-fields');
+  function syncFpMode() {
+    const useCsv = fpCsvToggle.checked;
+    fpCsvFields.style.display = useCsv ? '' : 'none';
+    fpKeywordFields.style.display = useCsv ? 'none' : '';
+  }
+  if (fpCsvToggle) {
+    fpCsvToggle.addEventListener('change', syncFpMode);
+    syncFpMode();
+  }
+
+  const pcAll = document.getElementById('pc_all');
+  const pcCodes = document.getElementById('pc_codes');
+  function syncPc() {
+    pcCodes.disabled = pcAll.checked;
+  }
+  if (pcAll) {
+    pcAll.addEventListener('change', syncPc);
+    syncPc();
+  }
+
+  // ---------------------------------------------------------- AJAX wiring
+  function flash(text, isError) {
+    const el = document.getElementById('rule-form-status');
+    if (!el) return;
+    el.textContent = text;
+    el.style.color = isError ? 'var(--danger)' : '';
+    setTimeout(() => { el.textContent = ''; }, 3000);
+  }
+
+  function applyFragments(data) {
+    if (data.form_html) {
+      const el = document.getElementById('rule-form-fieldset');
+      if (el) el.outerHTML = data.form_html;
+    }
+    if (data.rules_list_html) {
+      const el = document.getElementById('rules-list-wrapper');
+      if (el) el.outerHTML = data.rules_list_html;
+    }
+    if (data.csv_html) {
+      const el = document.getElementById('csv-status-fieldset');
+      if (el) el.outerHTML = data.csv_html;
+    }
+    window.initRulesPage();
+    if (data.status === 'saved') flash('Saved ✓');
+  }
+
+  document.querySelectorAll('.ajax-rules-form').forEach((form) => {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) return;
+      fetch(form.action, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: new FormData(form),
+      })
+        .then((r) => r.json())
+        .then(applyFragments)
+        .catch(() => flash('Something went wrong - try again', true));
+    });
+  });
+
+  document.querySelectorAll('.ajax-rule-edit').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      fetch(link.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then((r) => r.json())
+        .then(applyFragments)
+        .catch(() => flash('Something went wrong - try again', true));
+    });
+  });
+};
+
+window.initRulesPage();
+</script>
+{% endblock %}

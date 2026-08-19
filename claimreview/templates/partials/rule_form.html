@@ -1,0 +1,215 @@
+{% macro scope_select(field_id, cur_scope, cur_page_scope) %}
+<select id="{{ field_id }}" name="{{ field_id }}" style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+  <option value="any_page_any_doc" {% if cur_scope == 'any_doc' and cur_page_scope != 'all_pages' %}selected{% endif %}>Any page, of at least one document</option>
+  <option value="all_pages_any_doc" {% if cur_scope == 'any_doc' and cur_page_scope == 'all_pages' %}selected{% endif %}>Every page, of at least one document</option>
+  <option value="any_page_all_docs" {% if cur_scope == 'all_docs' and cur_page_scope != 'all_pages' %}selected{% endif %}>Any page, of every document</option>
+  <option value="all_pages_all_docs" {% if cur_scope == 'all_docs' and cur_page_scope == 'all_pages' %}selected{% endif %}>Every page, of every document</option>
+</select>
+{% endmacro %}
+<fieldset class="settings-group" style="margin-top:1.5rem;" id="rule-form-fieldset">
+  <legend>{{ 'Edit rule' if edit_rule else 'Add a rule' }}</legend>
+  {% if rule_error %}<p class="settings-help" style="color:var(--danger);">{{ rule_error }}</p>{% endif %}
+  <form method="post"
+        action="{{ (url_for('rules.update_rule', rule_id=edit_rule.id) if edit_rule else url_for('rules.create_rule')) }}{{ next_qs }}"
+        class="settings-form ajax-rules-form" id="rule-form">
+    <div class="settings-field">
+      <label for="rule-name">Rule name</label>
+      <input type="text" id="rule-name" name="name" placeholder="e.g. Patient name must appear in documents" required
+             value="{{ edit_rule.name if edit_rule else '' }}"
+             style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+    </div>
+    <div class="settings-field">
+      <label for="rule-type">Rule type</label>
+      <select id="rule-type" name="rule_type" style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+        <option value="field_present" {% if edit_rule and edit_rule.rule_type == 'field_present' %}selected{% endif %}>Value/keyword present in documents</option>
+        <option value="field_consistency" {% if edit_rule and edit_rule.rule_type == 'field_consistency' %}selected{% endif %}>Field consistency across documents</option>
+        <option value="length_of_stay" {% if edit_rule and edit_rule.rule_type == 'length_of_stay' %}selected{% endif %}>Length of stay / admission &amp; discharge dates</option>
+        <option value="documents_present" {% if edit_rule and edit_rule.rule_type == 'documents_present' %}selected{% endif %}>Declared documents present in the folder</option>
+      </select>
+    </div>
+
+    <div class="rule-type-fields" data-for="field_present">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="fp_compare_with_csv" id="fp_compare_with_csv"
+               {% if edit_rule and edit_rule.rule_type == 'field_present' and edit_rule.config.compare_with_csv %}checked{% endif %}>
+        <span>Use a CSV field's value instead of a fixed keyword</span>
+      </label>
+
+      <div class="fp-csv-fields" style="display:none;">
+        <div class="settings-field">
+          <label for="fp_csv_field">CSV field</label>
+          <input type="text" id="fp_csv_field" name="fp_csv_field" list="csv-fields" placeholder="e.g. patient_name"
+                 value="{{ edit_rule.config.csv_field if edit_rule and edit_rule.rule_type == 'field_present' else '' }}"
+                 style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          <p class="settings-help">The value from this CSV column (looked up fresh per claim) must appear in the claim's extracted text.</p>
+        </div>
+      </div>
+
+      <div class="fp-keyword-fields">
+        <div class="settings-field">
+          <label for="fp_keyword">Keyword</label>
+          <input type="text" id="fp_keyword" name="fp_keyword" placeholder="e.g. consent form"
+                 value="{{ edit_rule.config.keyword if edit_rule and edit_rule.rule_type == 'field_present' else '' }}"
+                 style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          <p class="settings-help">Fixed text (or regex pattern) that must appear in the claim's extracted text - forms, query answers, and table cells.</p>
+        </div>
+        <label class="settings-checkbox">
+          <input type="checkbox" name="fp_case_insensitive" id="fp_case_insensitive"
+                 {% if not edit_rule or edit_rule.rule_type != 'field_present' or edit_rule.config.case_insensitive %}checked{% endif %}>
+          <span>Case-insensitive</span>
+        </label>
+        <label class="settings-checkbox">
+          <input type="checkbox" name="fp_regex" id="fp_regex"
+                 {% if edit_rule and edit_rule.rule_type == 'field_present' and edit_rule.config.regex %}checked{% endif %}>
+          <span>Treat keyword as a regex pattern</span>
+        </label>
+      </div>
+
+      <div class="settings-field">
+        <label for="fp_scope">Scope</label>
+        {% set fp_cur_scope = edit_rule.config.scope if edit_rule and edit_rule.rule_type == 'field_present' else 'any_doc' %}
+        {% set fp_cur_page_scope = edit_rule.config.page_scope if edit_rule and edit_rule.rule_type == 'field_present' else 'any_page' %}
+        {{ scope_select('fp_scope', fp_cur_scope, fp_cur_page_scope) }}
+        <p class="settings-help">"Any page" means found anywhere in the document (a multi-page PDF's pages are pooled together); "every page" requires it on every one of that document's pages. "At least one document" vs "every document" is about how many documents in the claim need to satisfy that.</p>
+      </div>
+    </div>
+
+    <div class="rule-type-fields" data-for="field_consistency" style="display:none;">
+      <div class="settings-field">
+        <label for="fc_concept">Concept</label>
+        <select id="fc_concept" name="fc_concept" style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          {% for alias in query_aliases %}
+          <option value="{{ alias }}" {% if edit_rule and edit_rule.rule_type == 'field_consistency' and edit_rule.config.concept == alias %}selected{% endif %}>{{ alias }}</option>
+          {% endfor %}
+        </select>
+        <p class="settings-help">Must be the same value across every document it's extracted from.</p>
+      </div>
+      <div class="settings-field">
+        <label for="fc_scope">Scope</label>
+        {% set fc_cur_scope = edit_rule.config.scope if edit_rule and edit_rule.rule_type == 'field_consistency' else 'any_doc' %}
+        {% set fc_cur_page_scope = edit_rule.config.page_scope if edit_rule and edit_rule.rule_type == 'field_consistency' else 'any_page' %}
+        {{ scope_select('fc_scope', fc_cur_scope, fc_cur_page_scope) }}
+        <p class="settings-help">"At least one document" only checks consistency among whatever documents the concept was actually extracted from. "Every document" additionally fails if the concept is missing from any document - "any page"/"every page" controls whether one page of that document is enough or it must be on every page.</p>
+      </div>
+      <label class="settings-checkbox">
+        <input type="checkbox" name="fc_skip_empty" id="fc_skip_empty"
+               {% if edit_rule and edit_rule.rule_type == 'field_consistency' and edit_rule.config.skip_empty %}checked{% endif %}>
+        <span>Skip empty/missing values</span>
+      </label>
+      <p class="settings-help">Ignore documents where nothing was extracted for this concept, instead of treating a blank as a value.</p>
+      <label class="settings-checkbox">
+        <input type="checkbox" name="fc_compare_with_csv" id="fc_compare_with_csv"
+               {% if edit_rule and edit_rule.rule_type == 'field_consistency' and edit_rule.config.compare_with_csv %}checked{% endif %}>
+        <span>Also compare against a CSV field</span>
+      </label>
+      <div class="settings-field">
+        <input type="text" id="fc_csv_field" name="fc_csv_field" list="csv-fields" placeholder="e.g. gender"
+               value="{{ edit_rule.config.csv_field if edit_rule and edit_rule.rule_type == 'field_consistency' else '' }}"
+               style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+        <p class="settings-help">When a CSV value is present, each extracted value is fuzzy/soundex-matched against it directly (OCR-typo tolerant) rather than only being compared to other documents.</p>
+      </div>
+    </div>
+
+    <div class="rule-type-fields" data-for="length_of_stay" style="display:none;">
+      <div class="settings-field">
+        <label for="los_admission_field">CSV admission-date field</label>
+        <input type="text" id="los_admission_field" name="los_admission_field" list="csv-fields"
+               value="{{ edit_rule.config.csv_admission_field if edit_rule and edit_rule.rule_type == 'length_of_stay' else 'admission_dt' }}"
+               style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+      </div>
+      <div class="settings-field">
+        <label for="los_discharge_field">CSV discharge-date field</label>
+        <input type="text" id="los_discharge_field" name="los_discharge_field" list="csv-fields"
+               value="{{ edit_rule.config.csv_discharge_field if edit_rule and edit_rule.rule_type == 'length_of_stay' else 'discharge_dt' }}"
+               style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+      </div>
+      <div class="settings-field">
+        <label for="los_max_days">Max plausible length of stay (days, optional)</label>
+        <input type="number" id="los_max_days" name="los_max_days" placeholder="e.g. 90"
+               value="{{ edit_rule.config.max_los_days if edit_rule and edit_rule.rule_type == 'length_of_stay' and edit_rule.config.max_los_days else '' }}"
+               style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+      </div>
+      <label class="settings-checkbox">
+        <input type="checkbox" name="los_compare_with_extracted" id="los_compare_with_extracted"
+               {% if not edit_rule or edit_rule.rule_type != 'length_of_stay' or edit_rule.config.compare_with_extracted %}checked{% endif %}>
+        <span>Cross-check against dates Textract extracted from the documents</span>
+      </label>
+      <p class="settings-help">Only works on claims processed after the "Date of Admission" query was added - older claims need reprocessing (real Textract cost) to pick it up.</p>
+    </div>
+
+    <div class="rule-type-fields" data-for="documents_present" style="display:none;">
+      <p class="settings-help">
+        Compares the documents the claim bundle declares (from its payer/provider JSON) against the
+        files actually in the claim folder. This is the one check that needs no OCR - a document that
+        was referenced but never downloaded has no page for any text rule to read. Only applies to
+        claims fetched through this app, since that is where the declared list comes from.
+      </p>
+      <label class="settings-checkbox">
+        <input type="checkbox" name="dp_check_declared" id="dp_check_declared"
+               {% if not edit_rule or edit_rule.rule_type != 'documents_present' or edit_rule.config.check_declared %}checked{% endif %}>
+        <span>Every declared document must be in the folder</span>
+      </label>
+      <label class="settings-checkbox" style="margin-top:0.5rem;">
+        <input type="checkbox" name="dp_check_investigations" id="dp_check_investigations"
+               {% if not edit_rule or edit_rule.rule_type != 'documents_present' or edit_rule.config.check_investigation_attachments %}checked{% endif %}>
+        <span>Investigation attachments must be in the folder too</span>
+      </label>
+      <label class="settings-checkbox" style="margin-top:0.5rem;">
+        <input type="checkbox" name="dp_flag_no_attachment" id="dp_flag_no_attachment"
+               {% if edit_rule and edit_rule.rule_type == 'documents_present' and edit_rule.config.flag_investigations_without_attachment %}checked{% endif %}>
+        <span>Also flag investigations that have no attachment at all</span>
+      </label>
+      <p class="settings-help">Off by default - plenty of investigation items legitimately carry no attachment.</p>
+      <div class="settings-field">
+        <label for="dp_required_types">Required document types (one per line, optional)</label>
+        <textarea id="dp_required_types" name="dp_required_types" rows="4"
+                  placeholder="Discharge Summary&#10;Hospital Bill"
+                  style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-family:inherit;">{% if edit_rule and edit_rule.rule_type == 'documents_present' %}{{ edit_rule.config.required_types | join('\n') }}{% endif %}</textarea>
+        <p class="settings-help">
+          Matched case-insensitively against each declared document's type and description. Leave empty
+          to only check that whatever the claim declares is actually present.
+        </p>
+      </div>
+    </div>
+
+    <datalist id="csv-fields">
+      {% for field in available_fields %}<option value="{{ field }}">{% endfor %}
+    </datalist>
+
+    {% set edit_codes = edit_rule.config.procedure_codes if edit_rule else ['All'] %}
+    <fieldset class="settings-group" style="margin-top:1rem;">
+      <legend>Applies to procedure code(s)</legend>
+      <label class="settings-checkbox">
+        <input type="checkbox" name="pc_all" id="pc_all" {% if 'All' in edit_codes %}checked{% endif %}>
+        <span>All procedure codes (default)</span>
+      </label>
+      <div class="settings-field">
+        <select name="pc_codes" id="pc_codes" multiple size="6"
+                style="width:100%; padding:0.4rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          {% for code in procedure_codes %}
+          <option value="{{ code }}" {% if code in edit_codes %}selected{% endif %}>{{ code }}</option>
+          {% endfor %}
+        </select>
+        <p class="settings-help">Only used when "All procedure codes" is unchecked. This rule then only runs for claims whose CSV <code>procedure_code</code> is one of the selected codes.</p>
+      </div>
+    </fieldset>
+
+    {% set edit_scope = edit_rule.config.doc_scope_tags if edit_rule else ['document', 'photo'] %}
+    <fieldset class="settings-group" style="margin-top:1rem;">
+      <legend>Document scope</legend>
+      <p class="settings-help">Which kinds of pages this rule looks at. Defaults to document + photo; gps photo (a photo whose extracted text mentions GPS/Lat/Lon/Google/Camera) and has face are opt-in.</p>
+      {% for tag in doc_scope_tags %}
+      <label class="settings-checkbox">
+        <input type="checkbox" name="doc_scope_tags" value="{{ tag }}" {% if tag in edit_scope %}checked{% endif %}>
+        <span>{{ tag }}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+
+    <div class="settings-actions">
+      <button type="submit">{{ 'Save changes' if edit_rule else 'Add rule' }}</button>
+      {% if edit_rule %}<a class="btn btn-secondary ajax-rule-edit" href="{{ url_for('rules.view_rules') }}{{ next_qs }}" style="text-decoration:none; display:inline-flex; align-items:center;">Cancel</a>{% endif %}
+      <span class="hint" id="rule-form-status" aria-live="polite"></span>
+    </div>
+  </form>
+</fieldset>

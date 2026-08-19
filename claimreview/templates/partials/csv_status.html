@@ -1,0 +1,22 @@
+<fieldset class="settings-group" id="csv-status-fieldset">
+  <legend>Claims data</legend>
+  {% if upload_meta %}
+  <p class="current-status">
+    <span class="badge status-completed">Loaded</span>
+    {{ upload_meta.filename }} - {{ upload_meta.row_count }} row(s), uploaded {{ upload_meta.uploaded_at }}
+  </p>
+  <p class="settings-help">Columns: {{ upload_meta.columns|join(', ') }}</p>
+  <form method="post" action="{{ url_for('rules.clear_data') }}{{ next_qs }}" style="margin-top:0.5rem;" class="ajax-rules-form">
+    <button type="submit" class="btn-secondary">Clear loaded data</button>
+  </form>
+  {% else %}
+  <p class="hint">No claims data loaded yet. Rules that need CSV values will show "no data" until you upload one.</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('rules.upload_csv') }}{{ next_qs }}" enctype="multipart/form-data" style="margin-top:1rem;" class="ajax-rules-form">
+    {% if upload_error %}<p class="settings-help" style="color:var(--danger);">{{ upload_error }}</p>{% endif %}
+    <input type="file" name="csv_file" accept=".csv" required>
+    <button type="submit">Upload CSV</button>
+    <p class="settings-help">Must have a <code>registration_id</code> column matching the claim folder names.</p>
+  </form>
+</fieldset>

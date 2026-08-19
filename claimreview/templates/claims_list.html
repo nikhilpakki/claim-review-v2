@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Claims - Claim Review{% endblock %}
+{% block content %}
+<h1>Claim bundles</h1>
+<p class="hint">{{ claims|length }} claim(s) found under <code>{{ active_root }}</code></p>
+
+{% if fetch_run %}
+<div class="fetch-banner" id="fetch-run-banner" data-run-id="{{ fetch_run.run_id }}">
+  {% if fetch_run.missing %}
+    <span>Fetch run <span class="mono">{{ fetch_run.run_id }}</span> is no longer on record, so nothing was pre-selected.</span>
+  {% elif fetch_run.present %}
+    <span>
+      <strong>{{ fetch_run.present }} claim(s)</strong> from fetch run
+      <span class="mono">{{ fetch_run.run_id }}</span> are selected below.
+      {% if fetch_run.present != fetch_run.landed %}
+        ({{ fetch_run.landed - fetch_run.present }} of the run's claims are not in this folder.)
+      {% endif %}
+    </span>
+    <button type="button" class="btn-secondary" id="fetch-run-only">Show only these</button>
+    <a class="btn-link" href="{{ url_for('claims.list_claims_view') }}">Clear</a>
+  {% else %}
+    <span>
+      None of fetch run <span class="mono">{{ fetch_run.run_id }}</span>'s claims are in this folder -
+      it downloaded to <span class="mono">{{ fetch_run.destination }}</span>.
+    </span>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="claim-filters">
+  <input type="text" id="claim-filter-text" placeholder="Filter by claim ID...">
+  {% if fetch_run_options %}
+  <select id="fetch-run-select" title="Show only the claims a particular fetch landed">
+    <option value="">All fetches ({{ claims|length }} claims)</option>
+    {% for run in fetch_run_options %}
+    <option value="{{ run.run_id }}" {% if run.run_id == selected_run_id %}selected{% endif %}>
+      {{ run.run_id }} &mdash; {{ run.claims_here }} claim{{ '' if run.claims_here == 1 else 's' }} here
+      {%- if run.source %} &mdash; {{ run.source }}{% endif %}
+    </option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  <div class="filter-buttons" id="claim-filter-status">
+    <button class="filter-btn active" data-status="all">All</button>
+    <button class="filter-btn" data-status="not_started">Not processed</button>
+    <button class="filter-btn" data-status="running">Processing</button>
+    <button class="filter-btn" data-status="completed">Processed</button>
+    <button class="filter-btn" data-status="failed">Failed</button>
+    <button class="filter-btn" data-status="interrupted">Interrupted</button>
+  </div>
+  <div class="filter-buttons" id="claim-filter-tags">
+    {% if settings.ENABLE_BLUR_CHECK %}<button class="filter-btn tag-toggle" data-tag="blurry">&#9888; Blurry</button>{% endif %}
+    {% if settings.ENABLE_PASTE_CHECK %}<button class="filter-btn tag-toggle" data-tag="paste">&#9888; Possible paste</button>{% endif %}
+    {% if settings.ENABLE_DUPLICATE_SIGNATURE_CHECK %}<button class="filter-btn tag-toggle" data-tag="duplicate">&#9888; Duplicate signature</button>{% endif %}
+    {% if settings.ENABLE_TOO_CLEAN_CHECK %}<button class="filter-btn tag-toggle" data-tag="tooClean">&#9888; Too clean</button>{% endif %}
+    {% if settings.ENABLE_CROPPED_CHECK %}<button class="filter-btn tag-toggle" data-tag="cropped">&#9888; Cropped</button>{% endif %}
+    {% if settings.ENABLE_CORRECTION_CHECK %}<button class="filter-btn tag-toggle" data-tag="correction">&#9888; Possible correction</button>{% endif %}
+    {% if settings.ENABLE_FACE_CHECK %}<button class="filter-btn tag-toggle" data-tag="hasFace">&#9888; Has face</button>{% endif %}
+    <button class="filter-btn tag-toggle" data-tag="ruleViolation">&#9888; Rule violation</button>
+  </div>
+</div>
+
+<div class="batch-bar">
+  <label class="select-all-label">
+    <input type="checkbox" id="select-all-checkbox">
+    <span>Select all visible</span>
+  </label>
+  <span id="batch-selected-count" class="hint">0 selected</span>
+  <button id="batch-process-btn" disabled>Process selected</button>
+  <span id="batch-status" class="progress-status"></span>
+</div>
+
+<ul class="claim-list" id="claim-list">
+  {% for claim in claims %}
+  {% set st = claim.status %}
+  {% set r = st.rollup %}
+  <li data-claim-id="{{ claim.claim_id }}" data-status="{{ st.status }}"
+      data-blurry="{{ 1 if r.blurry_pages else 0 }}"
+      data-paste="{{ 1 if r.paste_signatures else 0 }}"
+      data-duplicate="{{ 1 if r.duplicate_signatures else 0 }}"
+      data-too-clean="{{ 1 if r.too_clean_pages else 0 }}"
+      data-cropped="{{ 1 if r.cropped_pages else 0 }}"
+      data-correction="{{ 1 if r.correction_pages else 0 }}"
+      data-has-face="{{ 1 if r.face_pages else 0 }}"
+      data-rule-violation="{{ 1 if r.rule_violations else 0 }}"
+      data-fetch-run="{{ 1 if claim.preselected else 0 }}"
+      data-run-ids="{{ claim.fetch_run.run_ids | join(' ') if claim.fetch_run else '' }}">
+    <label class="claim-select">
+      <input type="checkbox" class="claim-checkbox" value="{{ claim.claim_id }}"
+             {% if claim.preselected %}checked{% endif %}>
+    </label>
+    <a href="{{ url_for('claims.claim_detail', claim_id=claim.claim_id) }}" class="claim-card">
+      <span class="claim-card-main">
+        <span class="claim-id">{{ claim.claim_id }}</span>
+        {% if claim.fetch_run %}
+        <span class="claim-run-tag" title="Fetched by run {{ claim.fetch_run.run_id }}">{{ claim.fetch_run.run_id }}</span>
+        {% endif %}
+        {% if st.unique_documents %}
+        <span class="claim-doc-count">{{ st.unique_documents }} unique document{{ 's' if st.unique_documents != 1 else '' }}</span>
+        {% elif st.status in ('completed', 'failed') %}
+        <span class="claim-doc-count" title="Processed before this count was tracked - click Process Claim again to backfill it">unique document count not yet available</span>
+        {% endif %}
+      </span>
+      <span class="claim-badges">
+        {% if r.blurry_pages %}
+        <span class="tag tag-blurry" title="{{ r.blurry_pages }} page(s) scored below the sharpness threshold">&#9888; {{ r.blurry_pages }} blurry</span>
+        {% endif %}
+        {% if r.paste_signatures %}
+        <span class="tag tag-paste" title="{{ r.paste_signatures }} signature(s) show recompression or border artifacts consistent with a pasted patch">&#9888; {{ r.paste_signatures }} possible paste</span>
+        {% endif %}
+        {% if r.duplicate_signatures %}
+        <span class="tag tag-duplicate-signature" title="{{ r.duplicate_signatures }} signature(s) match a signature elsewhere - could be a legitimate reused stamp, or worth checking">&#9888; {{ r.duplicate_signatures }} possible duplicate signature{{ 's' if r.duplicate_signatures != 1 else '' }}</span>
+        {% endif %}
+        {% if r.too_clean_pages %}
+        <span class="tag tag-too-clean" title="{{ r.too_clean_pages }} page(s) show suspiciously low scan/sensor noise - possibly a native digital PDF rather than a physical scan">&#9888; {{ r.too_clean_pages }} too clean</span>
+        {% endif %}
+        {% if r.cropped_pages %}
+        <span class="tag tag-cropped" title="{{ r.cropped_pages }} page(s) have content running right up to the image edge, suggesting a cropped/cut-off capture">&#9888; {{ r.cropped_pages }} cropped</span>
+        {% endif %}
+        {% if r.correction_pages %}
+        <span class="tag tag-correction" title="{{ r.correction_pages }} page(s) show localized ink-density anomalies - possible corrections/strikethroughs. Low confidence - can misfire on stamps, tables, or dense signatures.">&#9888; {{ r.correction_pages }} possible correction</span>
+        {% endif %}
+        {% if r.face_pages %}
+        <span class="tag tag-has-face" title="{{ r.face_pages }} page(s) have a detected face">&#9888; {{ r.face_pages }} has face</span>
+        {% endif %}
+        {% if r.rule_violations %}
+        <span class="tag tag-rule-violation" title="{{ r.rule_violations }} configured rule(s) failed for this claim - see the Rules tab for details">&#9888; {{ r.rule_violations }} rule violation{{ 's' if r.rule_violations != 1 else '' }}</span>
+        {% endif %}
+        <span class="badge status-{{ st.status }}" data-badge>
+          {%- if st.status == 'not_started' -%}
+            Not processed
+          {%- elif st.status == 'running' -%}
+            Processing {{ st.processed + st.cached + st.failed }}/{{ st.total }}
+          {%- elif st.status == 'completed' -%}
+            Processed ({{ st.processed + st.cached }}/{{ st.total }})
+          {%- elif st.status == 'failed' -%}
+            Failed ({{ st.failed }} error{{ 's' if st.failed != 1 else '' }})
+          {%- elif st.status == 'interrupted' -%}
+            Interrupted - retry
+          {%- endif -%}
+        </span>
+      </span>
+    </a>
+  </li>
+  {% else %}
+  <li class="empty">No claim folders found in this root.</li>
+  {% endfor %}
+</ul>
+<p class="hint" id="claim-filter-empty" style="display:none;">No claims match this filter.</p>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/claims_list.js') }}"></script>
+{% endblock %}

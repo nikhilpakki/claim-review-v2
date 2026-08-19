@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+var/
+
+# Runtime data and run artefacts. These carry real beneficiary data (patient
+# names, diagnoses, amounts), so they must never enter git history.
+*.db
+*.sqlite3
+claim_bundle_pipeline_*.xlsx
+claim_bundle_pipeline_*.json
+pipeline_reports/
+data/claim-bundle/
+retry_claims.csv

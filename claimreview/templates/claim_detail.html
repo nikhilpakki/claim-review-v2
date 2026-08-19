@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+{% block title %}Claim {{ claim_id }} - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<h1>Claim {{ claim_id }}</h1>
+
+<div class="claim-summary-panel">
+  <h2 style="font-size:1rem; margin:0 0 0.4rem;">Claim summary</h2>
+  <p class="settings-help" style="margin:0 0 0.5rem;">
+    The same fields from three independent sources: the claim bundle's own data, the documents' OCR
+    output (tables, then form fields, then Textract queries - first match wins), and the claims dataset.
+    A mismatch is a signal to look closer, not proof of an error.
+    Patient name and hospital are not read off a labelled field - they are rarely labelled - so instead
+    the claims-data value is searched for in the documents; a linked value means that value was found,
+    and the link lists every occurrence.
+    {% if not summary.has_bundle %}<br>No bundle column: this claim was not fetched through this app.{% endif %}
+  </p>
+  <div style="overflow-x:auto;">
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Field</th>
+        {% if summary.has_bundle %}<th>Claim bundle</th>{% endif %}
+        <th>Documents (OCR)</th>
+        <th>Claims data</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in summary.rows %}
+      <tr>
+        <th scope="row" class="summary-field">{{ row.label }}</th>
+        {% if summary.has_bundle %}
+        <td>{{ row.bundle if row.bundle is not none and row.bundle != '' else '—' }}</td>
+        {% endif %}
+        <td>
+          {% if row.ocr_lookup %}
+            <a href="#" class="ocr-lookup-link" data-field="{{ row.key }}" data-label="{{ row.label }}"
+               title="Show every place this value was found in the documents">{{ row.ocr }}</a>
+            <span class="settings-help" style="display:block;">
+              found in {{ row.ocr_lookup.count }} place{{ '' if row.ocr_lookup.count == 1 else 's' }}
+              ({{ row.ocr_lookup.method }})
+            </span>
+            <script type="application/json" class="ocr-occurrences" data-field="{{ row.key }}">{{ row.ocr_occurrences|tojson }}</script>
+          {% else %}
+            {{ row.ocr if row.ocr is not none and row.ocr != '' else '—' }}
+            {% if row.ocr_source %}<span class="settings-help" style="display:block;">via {{ row.ocr_source }}</span>{% endif %}
+          {% endif %}
+        </td>
+        <td>{{ row.csv if row.csv is not none and row.csv != '' else '—' }}</td>
+        <td>
+          {% if row.agreement == 'agree' %}<span class="tag tag-pass" title="Sources agree">&#10003;</span>
+          {% elif row.agreement == 'differ' %}<span class="tag tag-rule-violation" title="Sources disagree">&#9888;</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="ocr-modal" id="ocr-modal" hidden>
+  <div class="ocr-modal-backdrop" data-close></div>
+  <div class="ocr-modal-panel" role="dialog" aria-modal="true" aria-labelledby="ocr-modal-title">
+    <div class="ocr-modal-head">
+      <h3 id="ocr-modal-title" style="margin:0;">Occurrences</h3>
+      <button type="button" class="btn-secondary" data-close>Close</button>
+    </div>
+    <p class="settings-help" id="ocr-modal-note"></p>
+    <div style="overflow:auto;">
+      <table class="summary-table" id="ocr-modal-table">
+        <thead>
+          <tr><th>Document</th><th>Page</th><th>Field</th><th>Value found</th><th>Match</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if amounts.has_data %}
+<div class="claim-summary-panel">
+  <h2 style="font-size:1rem; margin:0 0 0.4rem;">Amounts</h2>
+  <p class="settings-help" style="margin:0 0 0.5rem;">
+    From the claim bundle. Every figure appears in the bundle once per side and stage; this shows the
+    payer's value where the two sides differ, and what the provider asked for against what was approved.
+  </p>
+  <div style="overflow-x:auto;">
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Stage</th><th>Requested</th><th>Approved</th><th>Claimed</th>
+        <th>Deducted</th><th>Liability</th><th>Wallet balance</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for total in amounts.totals %}
+      <tr>
+        <th scope="row" class="summary-field">{{ total.label }}</th>
+        <td>{{ '{:,.2f}'.format(total.requested_amount) if total.requested_amount is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(total.approved_amount) if total.approved_amount is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(total.claimed_amount) if total.claimed_amount is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(total.total_deducted_amount) if total.total_deducted_amount is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(total.liability_amount) if total.liability_amount is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(total.wallet_balance_amount) if total.wallet_balance_amount is not none else '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="hint">No claim-level totals in this bundle.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  {% if amounts.procedures %}
+  <div style="overflow-x:auto; margin-top:0.75rem;">
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Line</th><th>Requested</th><th>Approved</th>
+        <th>Requested &minus; approved</th><th>Claimed</th><th>Deducted</th><th>Qty</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in amounts.procedures %}
+      <tr>
+        <th scope="row" class="summary-field">
+          {{ item.code }}
+          {% if item.name %}<span class="settings-help" style="display:block;">{{ item.name }}</span>{% endif %}
+        </th>
+        <td>
+          {{ '{:,.2f}'.format(item.provider_requested) if item.provider_requested is not none else '—' }}
+          {% if item.requested_stage %}<span class="settings-help" style="display:block;">at {{ item.requested_stage }}</span>{% endif %}
+        </td>
+        <td>
+          {{ '{:,.2f}'.format(item.payer_approved) if item.payer_approved is not none else '—' }}
+          {% if item.approved_stage %}<span class="settings-help" style="display:block;">at {{ item.approved_stage }}</span>{% endif %}
+        </td>
+        <td>
+          {% if item.reduction is none %}—
+          {% elif item.reduction > 0 %}<span class="tag tag-rule-violation" title="Approved for less than was requested">{{ '{:,.2f}'.format(item.reduction) }}</span>
+          {% elif item.reduction < 0 %}<span class="tag tag-nodata" title="Approved at an earlier stage covers more than the final request">{{ '{:,.2f}'.format(item.reduction) }}</span>
+          {% else %}<span class="tag tag-pass">0.00</span>{% endif %}
+        </td>
+        <td>{{ '{:,.2f}'.format(item.claimed) if item.claimed is not none else '—' }}</td>
+        <td>{{ '{:,.2f}'.format(item.deducted) if item.deducted is not none else '—' }}</td>
+        <td>
+          {{ item.quantity if item.quantity is not none else '—' }}
+          {%- if item.approved_quantity is not none and item.approved_quantity != item.quantity %}
+            &rarr; {{ item.approved_quantity }}
+          {%- endif %}
+        </td>
+        <td>{{ item.status or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="process-bar">
+  <button id="process-btn" data-claim-id="{{ claim_id }}">Process Claim</button>
+  <span class="progress-status" id="process-status"></span>
+  <div class="progress-bar-outer" id="progress-outer" style="display:none;">
+    <div class="progress-bar-inner" id="progress-inner"></div>
+  </div>
+</div>
+
+<div class="claim-layout">
+  <div class="list-col">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="documents">Documents ({{ doc_groups|length }})</button>
+      <button class="tab-btn" data-tab="search">Search</button>
+      <button class="tab-btn" data-tab="signatures" id="signatures-tab-btn">Signatures</button>
+      <button class="tab-btn" data-tab="rules" id="rules-tab-btn">Rules</button>
+      <button class="tab-btn" data-tab="review">Review</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-documents">
+      <ul class="doc-list" id="doc-list">
+        {% for g in doc_groups %}
+        <li data-doc-id="{{ g.doc_id }}">
+          <a href="{{ url_for('documents.view_page', claim_id=claim_id, doc_id=g.doc_id, page=1) }}"
+             class="doc-open-link doc-row-main" data-doc-id="{{ g.doc_id }}" title="{{ g.file_name_display }}">
+            <span class="doc-group-tag">{{ g.group }}</span>
+            <span class="doc-text">
+              <span class="doc-file-name">{{ g.file_name_display }}</span>
+              {% for line in g.path_lines %}<span class="doc-dir-path">{{ line }}</span>{% endfor %}
+            </span>
+          </a>
+          <span class="doc-tags">
+            {% if g.quality %}
+              {% if g.quality.is_blurry %}<span class="tag tag-blurry" title="At least one page scored below the sharpness threshold">&#9888; blurry</span>{% endif %}
+              {% if g.quality.content_type %}<span class="tag tag-{{ g.quality.content_type|replace(' ', '-') }}">{{ g.quality.content_type }}</span>{% endif %}
+              {% if g.quality.too_clean_suspected %}<span class="tag tag-too-clean" title="Suspiciously low scan/sensor noise - possibly a native digital PDF rather than a physical scan">&#9888; too clean</span>{% endif %}
+              {% if g.quality.cropped_suspected %}<span class="tag tag-cropped" title="Content runs right up to the image edge, suggesting a cropped/cut-off capture">&#9888; cropped</span>{% endif %}
+              {% if g.quality.correction_suspected %}<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>{% endif %}
+              {% if g.quality.has_face %}<span class="tag tag-has-face" title="At least one page has a detected face">&#9888; has face</span>{% endif %}
+            {% endif %}
+            {% if g.signature_flags %}
+              {% if g.signature_flags.paste_suspicious %}<span class="tag tag-paste" title="{{ g.signature_flags.paste_notes|join('; ') or 'A signature region on this document shows artifacts consistent with a pasted patch' }} - worth a closer look, not proof of tampering">&#9888; possible paste</span>{% endif %}
+              {% if g.signature_flags.duplicate_count %}<span class="tag tag-duplicate-signature" title="Matches a signature found elsewhere - could be a legitimate reused stamp, or worth checking">&#9888; {{ g.signature_flags.duplicate_count }} possible duplicate signature{{ 's' if g.signature_flags.duplicate_count != 1 else '' }}</span>{% endif %}
+            {% endif %}
+            <span class="doc-status {{ 'cached' if g.cached else 'pending' }}">
+              {{ 'processed' if g.cached else 'not processed' }}
+            </span>
+          </span>
+        </li>
+        {% else %}
+        <li class="empty">No .pdf/.jpg/.jpeg documents found under this claim.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="tab-panel" id="tab-search">
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="Search for a keyword or value...">
+        <button id="search-btn">Search</button>
+      </div>
+      <div id="search-results"></div>
+    </div>
+
+    <div class="tab-panel" id="tab-signatures">
+      <div id="signature-list">Loading...</div>
+    </div>
+
+    <div class="tab-panel" id="tab-rules">
+      <div id="rules-panel">Loading...</div>
+    </div>
+
+    <div class="tab-panel" id="tab-review">
+      <div id="review-panel"></div>
+    </div>
+  </div>
+
+  <div class="preview-col" id="preview-col">
+    <p class="hint">Select a document, search result, or signature to preview it here.</p>
+  </div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/ocr_lookup.js') }}"></script>
+<script>window.CLAIM_ID = {{ claim_id|tojson }};</script>
+<script src="{{ url_for('static', filename='js/process.js') }}"></script>
+<script src="{{ url_for('static', filename='js/preview.js') }}"></script>
+<script src="{{ url_for('static', filename='js/search.js') }}"></script>
+<script src="{{ url_for('static', filename='js/review.js') }}"></script>
+<script>
+window.loadSignatures = function () {
+  const el = document.getElementById('signature-list');
+  const tabBtn = document.getElementById('signatures-tab-btn');
+  fetch(`/api/claims/${window.CLAIM_ID}/signatures`).then((r) => r.json()).then((data) => {
+    const count = data.signatures ? data.signatures.length : 0;
+    if (tabBtn) tabBtn.textContent = `Signatures (${count})`;
+
+    if (!count) {
+      el.innerHTML = '<p class="hint">No signatures detected yet (process the claim first if you haven\'t).</p>';
+      return;
+    }
+    el.innerHTML = data.signatures.map((sig, idx) => {
+      const docPath = sig.file.split('/').map(encodeURIComponent).join('/');
+      const openUrl = `/claims/${window.CLAIM_ID}/doc/${docPath}/page/${sig.page_number}?field=signature`;
+      const slash = sig.file.lastIndexOf('/');
+      const fileName = slash === -1 ? sig.file : sig.file.slice(slash + 1);
+      const dirPath = slash === -1 ? '' : sig.file.slice(0, slash);
+
+      const tags = [];
+      if (sig.paste_suspicious) {
+        const reason = (sig.paste_notes || []).join('; ') || 'artifacts consistent with a pasted patch';
+        tags.push(`<span class="tag tag-paste" title="${reason} - worth a closer look, not proof of tampering">&#9888; possible paste: ${reason}</span>`);
+      }
+      const dupes = sig.possible_duplicate_of || [];
+      if (dupes.length) {
+        const dupLinks = dupes.map((d) => {
+          const dPath = d.document_path.split('/').map(encodeURIComponent).join('/');
+          const dUrl = `/claims/${d.claim_id}/doc/${dPath}/page/${d.page_number}`;
+          return `<a href="${dUrl}" target="_blank" rel="noopener">${d.claim_id}/${d.document_path} (p.${d.page_number})</a>`;
+        }).join(', ');
+        tags.push(`<span class="tag tag-duplicate-signature" title="Matches a signature elsewhere - could be a legitimate reused stamp, or worth checking">&#9888; matches: ${dupLinks}</span>`);
+      }
+
+      return `<div class="sig-item" data-idx="${idx}" title="${sig.file}">
+        <span class="doc-text">
+          <span class="doc-file-name">${fileName}</span>
+          ${dirPath ? `<span class="doc-dir-path">${dirPath}</span>` : ''}
+          <span class="doc-dir-path">page ${sig.page_number} &middot; ${sig.confidence.toFixed(1)}% confidence</span>
+          ${tags.length ? `<span class="sig-flags">${tags.join(' ')}</span>` : ''}
+        </span>
+        <a href="${openUrl}" target="_blank" rel="noopener" title="Open in new tab" class="open-new-tab">&#8599;</a>
+      </div>`;
+    }).join('');
+    el.querySelectorAll('.sig-item').forEach((item) => {
+      item.addEventListener('click', (e) => {
+        if (e.target.tagName === 'A') return;
+        const sig = data.signatures[Number(item.dataset.idx)];
+        window.openPreview(window.CLAIM_ID, sig.file, sig.page_number, { bbox: sig.bbox });
+      });
+    });
+  });
+};
+</script>
+<script>
+window.loadRules = function () {
+  const el = document.getElementById('rules-panel');
+  const tabBtn = document.getElementById('rules-tab-btn');
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  fetch(`/api/claims/${window.CLAIM_ID}/rules`).then((r) => r.json()).then((data) => {
+    const results = data.results || [];
+    const failCount = results.filter((r) => r.status === 'fail').length;
+    if (tabBtn) tabBtn.textContent = failCount ? `Rules (${failCount})` : 'Rules';
+
+    if (!results.length) {
+      el.innerHTML = '<p class="hint">No rules configured yet. <a href="/rules">Add some on the Rules page</a>.</p>';
+      return;
+    }
+    function renderIssues(issues) {
+      return issues.map((iss) => {
+        const items = (iss.items || []);
+        const shown = items.slice(0, 8);
+        const extra = items.length - shown.length;
+        const list = shown.length
+          ? `<ul class="rule-issue-items">${shown.map((it) => `<li>${escapeHtml(it)}</li>`).join('')}${extra > 0 ? `<li class="rule-issue-more">+${extra} more</li>` : ''}</ul>`
+          : '';
+        return `<div class="rule-issue">
+          <p class="rule-issue-summary">${escapeHtml(iss.summary)}</p>
+          ${list}
+        </div>`;
+      }).join('');
+    }
+
+    el.innerHTML = results.map((r) => {
+      const cls = r.status === 'fail' ? 'tag-rule-violation' : (r.status === 'pass' ? 'tag-pass' : 'tag-nodata');
+      const label = r.status === 'fail' ? 'FAIL' : (r.status === 'pass' ? 'PASS' : 'NO DATA');
+      const body = (r.issues && r.issues.length)
+        ? renderIssues(r.issues)
+        : `<p class="rule-message">${escapeHtml(r.message || '')}</p>`;
+      return `<div class="rule-item">
+        <div class="rule-item-header">
+          <span class="rule-name">${escapeHtml(r.name)}</span>
+          <span class="tag ${cls}">${label}</span>
+        </div>
+        ${body}
+      </div>`;
+    }).join('');
+  });
+};
+</script>
+<script>
+(function () {
+  const tabs = document.querySelectorAll('.tab-btn');
+  const panels = document.querySelectorAll('.tab-panel');
+  tabs.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      tabs.forEach((b) => b.classList.remove('active'));
+      panels.forEach((p) => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      if (btn.dataset.tab === 'signatures' && window.loadSignatures) window.loadSignatures();
+      if (btn.dataset.tab === 'rules' && window.loadRules) window.loadRules();
+      if (btn.dataset.tab === 'review' && window.loadReviewPanel) window.loadReviewPanel();
+    });
+  });
+
+  document.querySelectorAll('.doc-open-link').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.openPreview(window.CLAIM_ID, link.dataset.docId, 1, null);
+    });
+  });
+
+  // populate the Signatures/Rules tab counts right away, without waiting
+  // for the reviewer to click into those tabs first
+  if (window.loadSignatures) window.loadSignatures();
+  if (window.loadRules) window.loadRules();
+})();
+</script>
+{% endblock %}

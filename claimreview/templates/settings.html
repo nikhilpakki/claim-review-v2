@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Settings - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ back_url }}">&larr; Back</a>
+<h1>Detection settings</h1>
+<p class="hint">
+  These thresholds control the blur, content-type, and signature-forensics tags shown throughout the app.
+  Changes apply immediately to every already-processed document - no reprocessing or AWS cost involved.
+  Everything here is a heuristic meant to flag things for a reviewer to look closer at, not a definitive verdict.
+</p>
+
+<form method="post" action="{{ url_for('settings.save_settings') }}{{ next_qs }}" class="settings-form" id="settings-form">
+  {% for group_name, fields in groups %}
+  <fieldset class="settings-group">
+    <legend>{{ group_name }}</legend>
+    {% for key, label, help in fields %}
+    <div class="settings-field">
+      {% if values[key] is boolean %}
+      <label class="settings-checkbox">
+        <input type="checkbox" name="{{ key }}" {% if values[key] %}checked{% endif %}>
+        <span>{{ label }}</span>
+      </label>
+      {% else %}
+      <label for="field-{{ key }}">{{ label }}</label>
+      <input type="number" step="any" id="field-{{ key }}" name="{{ key }}" value="{{ values[key] }}">
+      {% endif %}
+      {% if help %}<p class="settings-help">{{ help }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </fieldset>
+  {% endfor %}
+
+  <div class="settings-actions">
+    <button type="submit">Save settings</button>
+    <span class="hint" id="settings-save-status" aria-live="polite"></span>
+  </div>
+</form>
+
+<form method="post" action="{{ url_for('settings.reset_settings') }}{{ next_qs }}" class="settings-reset-form" id="settings-reset-form">
+  <button type="submit" class="btn-secondary">Reset all to defaults</button>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  const form = document.getElementById('settings-form');
+  const resetForm = document.getElementById('settings-reset-form');
+  const statusEl = document.getElementById('settings-save-status');
+  let statusTimer = null;
+
+  function applyValues(values) {
+    Object.entries(values || {}).forEach(([key, value]) => {
+      const el = form.elements.namedItem(key);
+      if (!el) return;
+      if (el.type === 'checkbox') el.checked = !!value;
+      else el.value = value;
+    });
+  }
+
+  function flash(text, isError) {
+    if (statusTimer) clearTimeout(statusTimer);
+    statusEl.textContent = text;
+    statusEl.style.color = isError ? 'var(--danger)' : '';
+    statusTimer = setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  }
+
+  function submitAjax(target, { onSuccess }) {
+    return (e) => {
+      e.preventDefault();
+      fetch(target.action, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: new FormData(target),
+      })
+        .then((r) => { if (!r.ok) throw new Error('save failed'); return r.json(); })
+        .then((data) => onSuccess(data))
+        .catch(() => flash('Could not save - try again', true));
+    };
+  }
+
+  form.addEventListener('submit', submitAjax(form, {
+    onSuccess: (data) => { applyValues(data.values); flash('Saved ✓'); },
+  }));
+
+  if (resetForm) {
+    resetForm.addEventListener('submit', submitAjax(resetForm, {
+      onSuccess: (data) => { applyValues(data.values); flash('Reset to defaults'); },
+    }));
+  }
+})();
+</script>
+{% endblock %}

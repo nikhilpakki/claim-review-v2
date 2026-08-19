@@ -1,0 +1,40 @@
+<div id="rules-list-wrapper">
+<h2 style="margin-top:2rem; font-size:1.1rem;">Configured rules ({{ rules|length }})</h2>
+<ul class="doc-list" id="rules-list">
+  {% for rule in rules %}
+  <li>
+    <span class="doc-text">
+      <span class="doc-file-name">{{ rule.name }}</span>
+      <span class="doc-dir-path">
+        {%- if rule.rule_type == 'field_present' -%}
+          {% if rule.config.compare_with_csv %}Value present - CSV field "{{ rule.config.csv_field }}"{% else %}Keyword present - {{ 'regex ' if rule.config.regex }}"{{ rule.config.keyword }}"{{ ' (case-insensitive)' if rule.config.case_insensitive }}{% endif %}, scope: {{ rule.config.page_scope or 'any_page' }} of {{ rule.config.scope or 'any_doc' }}
+        {%- elif rule.rule_type == 'field_consistency' -%}
+          Consistency - {{ rule.config.concept }}{% if rule.config.compare_with_csv %} vs CSV "{{ rule.config.csv_field }}"{% endif %}{% if rule.config.skip_empty %}, skipping empty{% endif %}, scope: {{ rule.config.page_scope or 'any_page' }} of {{ rule.config.scope or 'any_doc' }}
+        {%- elif rule.rule_type == 'length_of_stay' -%}
+          Length of stay - {{ rule.config.csv_admission_field }} / {{ rule.config.csv_discharge_field }}{% if rule.config.max_los_days %}, max {{ rule.config.max_los_days }}d{% endif %}
+        {%- elif rule.rule_type == 'documents_present' -%}
+          Declared documents present{% if rule.config.check_investigation_attachments %} + investigation attachments{% endif %}{% if rule.config.required_types %}, requiring: {{ rule.config.required_types|join(', ') }}{% endif %}
+        {%- endif -%}
+        ; procedure code(s): {{ (rule.config.procedure_codes or ['All'])|join(', ') }}
+        {%- if rule.rule_type != 'documents_present' %}
+        ; doc types: {{ (rule.config.doc_scope_tags or ['document', 'photo'])|join(', ') }}
+        {%- endif %}
+      </span>
+    </span>
+    <span class="doc-tags">
+      <span class="badge {{ 'status-completed' if rule.enabled else 'status-not_started' }}">{{ 'enabled' if rule.enabled else 'disabled' }}</span>
+      <a class="btn btn-secondary ajax-rule-edit" href="{{ url_for('rules.edit_rule_form', rule_id=rule.id) }}{{ next_qs }}" style="text-decoration:none; display:inline-block;">Edit</a>
+      <form method="post" action="{{ url_for('rules.toggle_rule', rule_id=rule.id) }}{{ next_qs }}" style="display:inline;" class="ajax-rules-form">
+        <button type="submit" class="btn-secondary">{{ 'Disable' if rule.enabled else 'Enable' }}</button>
+      </form>
+      <form method="post" action="{{ url_for('rules.delete_rule', rule_id=rule.id) }}{{ next_qs }}" style="display:inline;"
+            class="ajax-rules-form" data-confirm="Delete this rule?">
+        <button type="submit" class="btn-secondary">Delete</button>
+      </form>
+    </span>
+  </li>
+  {% else %}
+  <li class="empty">No rules configured yet.</li>
+  {% endfor %}
+</ul>
+</div>

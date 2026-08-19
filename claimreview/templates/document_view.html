@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}{{ doc_id }} - Claim Review{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('claims.claim_detail', claim_id=claim_id) }}">&larr; back to claim {{ claim_id }}</a></p>
+<h1>{{ doc_id }}</h1>
+
+{% if not page_data %}
+  <p class="hint">This document hasn't been processed yet. Go back to the claim and click "Process Claim".</p>
+{% else %}
+<div class="page-nav">
+  {% if page > 1 %}
+  <a href="{{ url_for('documents.view_page', claim_id=claim_id, doc_id=doc_id, page=page-1) }}">&laquo; prev</a>
+  {% endif %}
+  <span>Page {{ page }} / {{ num_pages }}</span>
+  {% if page < num_pages %}
+  <a href="{{ url_for('documents.view_page', claim_id=claim_id, doc_id=doc_id, page=page+1) }}">next &raquo;</a>
+  {% endif %}
+  {% if page_data.is_blurry %}<span class="tag tag-blurry" title="Sharpness score {{ page_data.blur_score }}">&#9888; blurry</span>{% endif %}
+  {% if page_data.content_type %}<span class="tag tag-{{ page_data.content_type|replace(' ', '-') }}">{{ page_data.content_type }}</span>{% endif %}
+  {% if page_data.too_clean_suspected %}<span class="tag tag-too-clean" title="Suspiciously low scan/sensor noise - possibly a native digital PDF rather than a physical scan">&#9888; too clean</span>{% endif %}
+  {% if page_data.cropped_suspected %}<span class="tag tag-cropped" title="Content runs right up to the image edge ({{ page_data.edges|join(', ') }}), suggesting a cropped/cut-off capture">&#9888; cropped</span>{% endif %}
+  {% if page_data.correction_suspected %}<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>{% endif %}
+  {% if page_data.has_face %}<span class="tag tag-has-face" title="A face was detected on this page">&#9888; has face</span>{% endif %}
+</div>
+
+<div class="doc-viewer">
+  <div class="page-pane">
+    <div class="page-frame" id="page-frame">
+      <img id="page-img" src="{{ url_for('documents.media_page', file_hash=page_data.image_rel.split('/')[0], filename=page_data.image_rel.split('/')[1]) }}"
+           data-width="{{ page_data.width }}" data-height="{{ page_data.height }}">
+    </div>
+  </div>
+  <div class="side-pane">
+    <h3>Form fields on this page ({{ page_data.forms|length }})</h3>
+    <ul class="doc-list">
+      {% for form in page_data.forms %}
+      <li class="form-field-item" data-key-bbox='{{ form.key_bbox|tojson }}' data-value-bbox='{{ (form.value_bbox or {})|tojson }}'>
+        <span class="doc-name"><strong>{{ form.key }}</strong>: {{ form.value }}</span>
+      </li>
+      {% else %}
+      <li class="empty">No form fields detected on this page.</li>
+      {% endfor %}
+    </ul>
+
+    {% if page_data.queries %}
+    <h3>Query answers</h3>
+    <ul class="doc-list">
+      {% for alias, ans in page_data.queries.items() %}
+      <li><span class="doc-name">{{ alias }}: {{ ans.answer }}</span>
+        <span class="doc-group">{{ '%.1f'|format(ans.confidence) }}%</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <h3>Signatures on this page ({{ page_data.signatures|length }})</h3>
+    <ul class="doc-list">
+      {% for sig in page_data.signatures %}
+      <li class="signature-item" data-bbox='{{ sig.bbox|tojson }}'>
+        <span class="doc-name">Signature {{ loop.index }}</span>
+        <span class="doc-group">{{ '%.1f'|format(sig.confidence) }}%</span>
+        {% if sig.paste_suspicious or sig.possible_duplicate_of %}
+        <div class="sig-flags">
+          {% if sig.paste_suspicious %}
+          {% set reason = sig.notes|join('; ') if sig.notes else 'artifacts consistent with a pasted patch' %}
+          <span class="tag tag-paste" title="{{ reason }} - worth a closer look, not proof of tampering">&#9888; possible paste: {{ reason }}</span>
+          {% endif %}
+          {% if sig.possible_duplicate_of %}
+          <span class="tag tag-duplicate-signature" title="Matches a signature elsewhere">&#9888; matches:
+            {% for d in sig.possible_duplicate_of %}<a href="{{ url_for('documents.view_page', claim_id=d.claim_id, doc_id=d.document_path, page=d.page_number) }}" target="_blank" rel="noopener">{{ d.claim_id }}/{{ d.document_path }} (p.{{ d.page_number }})</a>{% if not loop.last %}, {% endif %}{% endfor %}
+          </span>
+          {% endif %}
+        </div>
+        {% endif %}
+      </li>
+      {% else %}
+      <li class="empty">No signatures detected on this page.</li>
+      {% endfor %}
+    </ul>
+
+    {% if page_data.tables %}
+    <h3>Tables on this page ({{ page_data.tables|length }})</h3>
+    {% for table in page_data.tables %}
+    <table class="doc-table">
+      {% for row in table %}
+      <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </table>
+    {% endfor %}
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+  window.PAGE_CONTEXT = {
+    highlight: {{ highlight|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='js/overlay.js') }}"></script>
+{% endblock %}

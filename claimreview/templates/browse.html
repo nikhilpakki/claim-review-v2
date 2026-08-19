@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Browse folders - Claim Review{% endblock %}
+{% block content %}
+<h1>Select the claims root folder</h1>
+<p class="hint">Browse to the folder that contains your claim bundles (each immediate subfolder is treated as one claim).</p>
+
+<form id="path-form" class="path-form">
+  <input type="text" id="path-input" name="path" value="{{ listing.path or '' }}"
+         placeholder="Paste an absolute folder path...">
+  <button type="submit">Go</button>
+</form>
+
+<div class="breadcrumb" id="breadcrumb"></div>
+
+<ul class="dir-list" id="dir-list">
+  {% for entry in listing.entries %}
+  <li>
+    <a href="#" class="dir-entry" data-path="{{ entry.path }}">{{ entry.name }}</a>
+  </li>
+  {% else %}
+  <li class="empty">No subfolders here.</li>
+  {% endfor %}
+</ul>
+
+<div class="select-root-bar">
+  <button id="select-root-btn" {% if not listing.path %}disabled{% endif %}>
+    Use this folder as claims root
+  </button>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/browse.js') }}"></script>
+{% endblock %}
