@@ -15,6 +15,7 @@ def start(claim_id, total):
             "cached": 0,
             "failed": 0,
             "current_files": [],
+            "failures": [],
             "total_pages": 0,
             "pages_done": 0,
             "error": None,
@@ -58,6 +59,15 @@ def remove_in_flight(claim_id, file_name):
         run = _runs.get(claim_id)
         if run and file_name in run["current_files"]:
             run["current_files"].remove(file_name)
+
+
+def add_failure(claim_id, file_name, error):
+    """Record why one document failed, so the UI can say more than "failed".
+    Capped: a systemic problem should not grow this without bound."""
+    with _lock:
+        run = _runs.get(claim_id)
+        if run is not None and len(run.setdefault("failures", [])) < 25:
+            run["failures"].append({"file": file_name, "error": error})
 
 
 def finish(claim_id, status="completed", error=None):

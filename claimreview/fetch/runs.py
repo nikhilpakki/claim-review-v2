@@ -18,12 +18,15 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_run(run_id, destination, params):
+def create_run(run_id, destination, params, user_id=None, display_name=None):
+    """Record who started it: with one instance shared by several reviewers, a
+    blocked user needs to see whose run is in the way, not just that one is."""
     db = get_db()
     db.execute(
-        "INSERT INTO fetch_runs (run_id, started_at, status, destination, params_json) "
-        "VALUES (?, ?, 'running', ?, ?)",
-        (run_id, _now(), str(destination), json.dumps(params, default=str)),
+        "INSERT INTO fetch_runs (run_id, started_at, status, destination, params_json, "
+        "started_by_user_id, started_by) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+        (run_id, _now(), str(destination), json.dumps(params, default=str),
+         user_id, display_name),
     )
     db.commit()
 

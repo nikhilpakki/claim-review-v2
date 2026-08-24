@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Sign in - Claim Review{% endblock %}
+{% block content %}
+<div style="max-width:24rem; margin:3rem auto;">
+  <h1>Claim Review</h1>
+  {% if not any_users %}
+  <div class="notice notice-warn">
+    No accounts exist yet. Set <code>BOOTSTRAP_ADMIN_USER</code> and
+    <code>BOOTSTRAP_ADMIN_PASSWORD</code> in <code>.env</code> and restart to create the first
+    administrator.
+  </div>
+  {% endif %}
+  {% if error %}<div class="notice notice-error">{{ error }}</div>{% endif %}
+  <form method="post" action="{{ url_for('auth.login') }}" class="settings-form">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="settings-field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+    </div>
+    <div class="settings-field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required
+             style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+    </div>
+    <div class="settings-actions"><button type="submit">Sign in</button></div>
+  </form>
+</div>
+{% endblock %}

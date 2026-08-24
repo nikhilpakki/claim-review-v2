@@ -13,7 +13,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .. import claim_extract, csv_data, fetch_progress
+from .. import claim_extract, csv_data, fetch_progress, users
 from . import queries, runs
 from .pipeline import FetchOptions, new_run_id, preview_claims, run_pipeline
 
@@ -85,12 +85,16 @@ def build_options(form, files=None, config=None, run_id=None) -> FetchOptions:
         exclude_procedure_codes=exclude_codes,
         hospital_type=hospital_type,
         load_redshift=_checked(form, "load_redshift"),
+        # Ticked by default in the form; unticking forces a re-download of
+        # claims already on disk.
+        skip_existing=_checked(form, "skip_existing"),
         write_reports=_checked(form, "write_reports"),
         report_dir=Path(config["PIPELINE_REPORT_DIR"]) if config.get("PIPELINE_REPORT_DIR") else None,
         # Never delete bundles from a run started in the app: those files are
         # what the review side displays. The CLI's --cleanup still exists.
         cleanup=False,
         source_table=config.get("CLAIM_SOURCE_TABLE") or FetchOptions.source_table,
+        lookup_tables=config.get("CLAIM_LOOKUP_TABLES"),
         target_schema=config.get("CLAIM_TARGET_SCHEMA") or FetchOptions.target_schema,
         source_bucket=config.get("S3_SOURCE_BUCKET") or FetchOptions.source_bucket,
         claim_workers=int(config.get("FETCH_CLAIM_WORKERS", 8)),
@@ -115,6 +119,7 @@ def describe_options(options: FetchOptions) -> dict[str, Any]:
         "load_redshift": options.load_redshift,
         "write_reports": options.write_reports,
         "source_table": options.source_table,
+        "skip_existing": options.skip_existing,
     }
 
 
@@ -131,14 +136,25 @@ def start(app, options: FetchOptions) -> str:
     """
     active = fetch_progress.active_run_id()
     if active:
-        raise FetchInputError(f"A fetch is already running (run {active}).")
+        state = fetch_progress.get(active) or {}
+        who = (state.get("params") or {}).get("started_by")
+        progress = f"{state.get('done', 0)}/{state.get('total', 0)} claims"
+        raise FetchInputError(
+            f"A fetch is already running ({progress})"
+            + (f", started by {who}" if who else "")
+            + ". Only one runs at a time - it owns the S3 connections and the "
+              "destination folder. Watch it below, or try again when it finishes.")
 
     run_id = options.run_id or new_run_id()
     options.run_id = run_id
     params = describe_options(options)
 
+    user = users.current_user()
+    params["started_by"] = user["display_name"] if user else None
     cancel_event = fetch_progress.start(run_id, str(options.destination), params)
-    runs.create_run(run_id, options.destination, params)
+    runs.create_run(run_id, options.destination, params,
+                    user_id=user["id"] if user else None,
+                    display_name=user["display_name"] if user else None)
 
     thread = threading.Thread(
         target=_run, args=(app, options, run_id, cancel_event), daemon=True

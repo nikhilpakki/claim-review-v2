@@ -110,6 +110,33 @@ DEFAULT_EXCLUDE_PROCEDURE_CODES = "lm100"
 
 HOSPITAL_TYPES = {"P": "Private", "G": "Government"}
 
+# Claim metadata does not all live in one table. claim_paid_t holds ~22k paid
+# claims; public.temp_view_claims holds ~1.75M, and an id pasted into the
+# "Specific registration IDs" box is very often in the latter and not the
+# former. The downloader has always fallen back across these three, in this
+# order, which is why such a claim downloads fine - so the metadata lookups
+# have to use the same chain or the claim arrives with no claims-data row.
+# All three carry the columns this app reads (patient_name, hospital_name,
+# age, admission_dt, discharge_dt, ...).
+CLAIM_LOOKUP_TABLES = [
+    "dmart_solution.claim_paid_t",
+    "public.temp_view_claims",
+    "dmart_solution.claim_paid_excel_t_08072026",
+]
+
+
+def lookup_tables(primary: str, fallbacks: list[str] | None = None) -> list[str]:
+    """The tables to search for a claim, primary first and de-duplicated."""
+    ordered = [primary] + list(fallbacks if fallbacks is not None else CLAIM_LOOKUP_TABLES)
+    seen: set[str] = set()
+    result = []
+    for table in ordered:
+        key = table.split(".")[-1].lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(table)
+    return result
+
 
 def parse_procedure_filter(value: str | None) -> list[list[str]]:
     """Parse a filter expression into AND groups of OR alternatives.
@@ -282,41 +309,67 @@ def fetch_claims_by_ids(
     claim_ids: list[str],
     source_table: str,
     filters: ClaimFilters | None = None,
+    fallback_tables: list[str] | None = None,
 ) -> list[tuple[str, str | None]]:
     """Return (registration_id, json_object_perauth) for the given IDs, in the
-    input order. IDs not found in the source table are still returned (preauth
-    None) so the downloader can fall back to its own multi-table lookup."""
+    input order.
+
+    Searches the primary table first, then the fallback chain for whatever is
+    still unresolved (see CLAIM_LOOKUP_TABLES): a pasted id is often a claim
+    that never reached the paid mart. IDs found nowhere are still returned with
+    preauth None, so the downloader can try its own lookup rather than the claim
+    being dropped silently.
+
+    The selection filters are applied to the primary table only. They describe
+    which claims to *choose* from the mart, and the fallback tables exist to
+    resolve ids the user has already chosen by hand - re-filtering there would
+    quietly drop explicitly requested claims.
+    """
     preauth_by_id: dict[str, str] = {}
     chunk_size = 1000
-    for start in range(0, len(claim_ids), chunk_size):
-        chunk = claim_ids[start:start + chunk_size]
-        filter_clause, filter_params = claim_filter_clause(filters)
-        query = sql.SQL("""
-            SELECT registration_id, json_object_perauth
-            FROM (
-                SELECT registration_id,
-                       json_object_perauth,
-                       last_insert_dt,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY registration_id
-                           ORDER BY last_insert_dt DESC
-                       ) AS rn
-                FROM {}
-                WHERE registration_id IN ({})
-                  AND json_object_perauth IS NOT NULL
-                  AND json_object_perauth <> ''{}
-            ) ranked
-            WHERE rn = 1
-        """).format(
-            _table(source_table),
-            sql.SQL(", ").join(sql.Placeholder() for _ in chunk),
-            filter_clause,
+
+    for table_index, table in enumerate(lookup_tables(source_table, fallback_tables)):
+        remaining = [claim_id for claim_id in claim_ids if claim_id not in preauth_by_id]
+        if not remaining:
+            break
+        # Filters belong to the mart we select from, not to a by-hand id list.
+        filter_clause, filter_params = (
+            claim_filter_clause(filters) if table_index == 0 else (sql.SQL(""), [])
         )
-        params = list(chunk) + list(filter_params)
-        with connection.cursor() as cursor:
-            cursor.execute(query, tuple(params))
-            for row in cursor.fetchall():
-                preauth_by_id[str(row[0])] = str(row[1])
+        for start in range(0, len(remaining), chunk_size):
+            chunk = remaining[start:start + chunk_size]
+            query = sql.SQL("""
+                SELECT registration_id, json_object_perauth
+                FROM (
+                    SELECT registration_id,
+                           json_object_perauth,
+                           last_insert_dt,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY registration_id
+                               ORDER BY last_insert_dt DESC
+                           ) AS rn
+                    FROM {}
+                    WHERE registration_id IN ({})
+                      AND json_object_perauth IS NOT NULL
+                      AND json_object_perauth <> ''{}
+                ) ranked
+                WHERE rn = 1
+            """).format(
+                _table(table),
+                sql.SQL(", ").join(sql.Placeholder() for _ in chunk),
+                filter_clause,
+            )
+            params = list(chunk) + list(filter_params)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(query, tuple(params))
+                    for row in cursor.fetchall():
+                        preauth_by_id[str(row[0])] = str(row[1])
+            except psycopg.Error:
+                # A fallback table can be missing or renamed (one of them is a
+                # dated one-off import). That must not sink the whole selection.
+                connection.rollback()
+                break
 
     return [(claim_id, preauth_by_id.get(claim_id)) for claim_id in claim_ids]
 
@@ -346,48 +399,65 @@ def fetch_claim_rows(
     connection: psycopg.Connection[Any],
     claim_ids: list[str],
     source_table: str,
+    fallback_tables: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Full latest source-table row per claim, as {column: text}.
 
     This is the same data an analyst would otherwise export to
     claims_paid_t.csv and upload by hand, so fetching it here lets the claims
-    dataset populate itself. No policy/procedure filter is applied - the IDs
-    have already been selected by the time this is called.
+    dataset populate itself.
+
+    Searches the same fallback chain as fetch_claims_by_ids. Without it, an id
+    that is not a paid claim downloads fine (the downloader has its own
+    fallback) but arrives with an empty claims-data row, and the claim summary
+    shows a column of dashes with nothing explaining why.
+
+    No policy/procedure filter is applied - the IDs have already been selected
+    by the time this is called.
     """
     if not claim_ids:
         return []
 
     rows_by_id: dict[str, dict[str, str]] = {}
     chunk_size = 500
-    for start in range(0, len(claim_ids), chunk_size):
-        chunk = claim_ids[start:start + chunk_size]
-        query = sql.SQL("""
-            SELECT * FROM (
-                SELECT source.*,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY registration_id
-                           ORDER BY last_insert_dt DESC
-                       ) AS _rn
-                FROM {} AS source
-                WHERE registration_id IN ({})
-            ) ranked
-            WHERE _rn = 1
-        """).format(
-            _table(source_table),
-            sql.SQL(", ").join(sql.Placeholder() for _ in chunk),
-        )
-        with connection.cursor() as cursor:
-            cursor.execute(query, tuple(chunk))
-            columns = [desc[0] for desc in cursor.description]
-            for record in cursor.fetchall():
-                row = {
-                    column: _as_text(value)
-                    for column, value in zip(columns, record)
-                    if column != "_rn"
-                }
-                claim_id = row.get("registration_id", "").strip()
-                if claim_id:
-                    rows_by_id[claim_id] = row
+
+    for table in lookup_tables(source_table, fallback_tables):
+        remaining = [claim_id for claim_id in claim_ids if claim_id not in rows_by_id]
+        if not remaining:
+            break
+        for start in range(0, len(remaining), chunk_size):
+            chunk = remaining[start:start + chunk_size]
+            query = sql.SQL("""
+                SELECT * FROM (
+                    SELECT source.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY registration_id
+                               ORDER BY last_insert_dt DESC
+                           ) AS _rn
+                    FROM {} AS source
+                    WHERE registration_id IN ({})
+                ) ranked
+                WHERE _rn = 1
+            """).format(
+                _table(table),
+                sql.SQL(", ").join(sql.Placeholder() for _ in chunk),
+            )
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(query, tuple(chunk))
+                    columns = [desc[0] for desc in cursor.description]
+                    for record in cursor.fetchall():
+                        row = {
+                            column: _as_text(value)
+                            for column, value in zip(columns, record)
+                            if column != "_rn"
+                        }
+                        claim_id = row.get("registration_id", "").strip()
+                        if claim_id and claim_id not in rows_by_id:
+                            rows_by_id[claim_id] = row
+            except psycopg.Error:
+                connection.rollback()
+                break
 
     return [rows_by_id[claim_id] for claim_id in claim_ids if claim_id in rows_by_id]
 

@@ -1,9 +1,37 @@
 import threading
+import time
 
 import boto3
 from botocore.config import Config
 
-FEATURE_TYPES = ["FORMS", "TABLES", "SIGNATURES", "LAYOUT", "QUERIES"]
+# Requested on every call. FORMS gives key/value pairs, LAYOUT gives the
+# document's structure (titles, section headers, paragraphs) which is the only
+# way to recover narrative prose such as a discharge summary, and TABLES is the
+# claim summary's strongest tier for age/admission/discharge - those usually sit
+# in a table, not a form pair.
+DEFAULT_FEATURE_TYPES = ["FORMS", "LAYOUT", "TABLES"]
+
+# Everything that can be switched on. SIGNATURES and QUERIES cost extra per
+# page and are opt-in under Advanced settings.
+ALL_FEATURE_TYPES = ["FORMS", "LAYOUT", "TABLES", "SIGNATURES", "QUERIES"]
+
+# What every document processed before the feature set became configurable was
+# analyzed with. Used to judge whether an old cached result is missing anything
+# the current profile asks for - it is a superset, so those results never need
+# reprocessing on account of features.
+LEGACY_FEATURE_TYPES = ["FORMS", "TABLES", "SIGNATURES", "LAYOUT", "QUERIES"]
+
+# Kept for callers that still import the old name.
+FEATURE_TYPES = DEFAULT_FEATURE_TYPES
+
+# LAYOUT block types: which start a named section, and which carry its content.
+LAYOUT_SECTION_BLOCK_TYPES = {"LAYOUT_TITLE", "LAYOUT_SECTION_HEADER"}
+LAYOUT_NARRATIVE_BLOCK_TYPES = {
+    "LAYOUT_TEXT", "LAYOUT_LIST", "LAYOUT_KEY_VALUE", "LAYOUT_TABLE",
+}
+
+# Separator between a section's narrative blocks.
+NEWLINE = chr(10)
 
 _client = None
 _client_region = None
@@ -69,31 +97,42 @@ def _child_text(block, blocks_map):
     return text.strip()
 
 
-def analyze_page(jpeg_bytes, region, queries):
-    """One analyze_document call for a single page image, combining
-    FORMS+TABLES+SIGNATURES+LAYOUT+QUERIES, parsed into a page-level dict:
+def analyze_page(jpeg_bytes, region, queries, features=None):
+    """One analyze_document call for a single page image, parsed into a
+    page-level dict:
 
     {forms: [{key, value, confidence, key_bbox, value_bbox}],
      tables: [2D matrix, ...],
      signatures: [{signature_id, confidence, bbox}],
-     queries: {alias: {answer, confidence}}}
+     queries: {alias: {answer, confidence}},
+     sections: [{title, text}]}
 
-    `region`/`queries` are passed in explicitly (from current_app.config by
+    `features` selects which Textract features to pay for (default
+    DEFAULT_FEATURE_TYPES). Keys absent from the requested set come back empty
+    rather than missing, so every consumer can read them unconditionally.
+
+    `region`/`queries`/`features` are passed in explicitly (from config by
     callers that have a Flask context) rather than read from current_app
     here, so this also works unchanged from a plain worker thread with no
     app context - see _get_client's docstring.
     """
     client = _get_client(region)
-    queries_config = {"Queries": queries}
+    features = list(features or DEFAULT_FEATURE_TYPES)
 
-    response = client.analyze_document(
-        Document={"Bytes": jpeg_bytes},
-        FeatureTypes=FEATURE_TYPES,
-        QueriesConfig=queries_config,
-    )
+    # Textract rejects QUERIES with no queries, and rejects a QueriesConfig
+    # without the QUERIES feature - so the two have to agree before the call.
+    if "QUERIES" in features and not queries:
+        features = [f for f in features if f != "QUERIES"]
+
+    kwargs = {"Document": {"Bytes": jpeg_bytes}, "FeatureTypes": features}
+    if "QUERIES" in features:
+        kwargs["QueriesConfig"] = {"Queries": queries}
+
+    response = client.analyze_document(**kwargs)
 
     blocks_map = {b["Id"]: b for b in response["Blocks"]}
-    result = {"forms": [], "tables": [], "signatures": [], "queries": {}}
+    result = {"forms": [], "tables": [], "signatures": [], "queries": {},
+              "sections": []}
 
     value_blocks = {}
     key_blocks = []
@@ -166,10 +205,58 @@ def analyze_page(jpeg_bytes, region, queries):
             "value_bbox": value_bbox,
         })
 
+    result["sections"] = _layout_sections(response["Blocks"], blocks_map)
     return result
 
 
-def analyze_page_throttled(jpeg_bytes, region, queries, max_concurrency):
+def _block_top(block):
+    """Vertical position on the page, for reading order."""
+    return block.get("Geometry", {}).get("BoundingBox", {}).get("Top", 0.0)
+
+
+def _layout_sections(blocks, blocks_map):
+    """Group the page's narrative LAYOUT blocks under the nearest preceding
+    title/section header, in reading order.
+
+    This is what recovers content FORMS never sees: a discharge summary is
+    prose under a heading, not a key/value pair, so without LAYOUT there is
+    nothing to read. The leading entry can have title=None when text appears
+    before any header (a preamble, or a section continuing from the previous
+    page - each page is its own analyze call, so a section spanning pages
+    arrives as a titled section followed by untitled ones).
+    """
+    layout_blocks = sorted(
+        (b for b in blocks if b["BlockType"].startswith("LAYOUT_")),
+        key=_block_top,
+    )
+    if not layout_blocks:
+        return []
+
+    sections = [{"title": None, "parts": []}]
+    for block in layout_blocks:
+        if block["BlockType"] in LAYOUT_SECTION_BLOCK_TYPES:
+            sections.append({"title": _child_text(block, blocks_map), "parts": []})
+        elif block["BlockType"] in LAYOUT_NARRATIVE_BLOCK_TYPES:
+            text = _child_text(block, blocks_map)
+            if text:
+                sections[-1]["parts"].append(text)
+
+    return [
+        {"title": section["title"], "text": NEWLINE.join(section["parts"])}
+        for section in sections
+        if section["parts"] or section["title"]
+    ]
+
+
+# One page failing used to discard its whole document, so a single transient
+# error cost every page of that document - which is why "process again" so
+# often just worked. boto3 already retries throttling; this covers the rest
+# (reset connections, read timeouts, brief service errors).
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2.0
+
+
+def analyze_page_throttled(jpeg_bytes, region, queries, max_concurrency, features=None):
     """Same as analyze_page, but acquires the shared process-wide semaphore
     (see _get_semaphore) first, so at most `max_concurrency` Textract calls
     - across every claim being processed at once, not just the caller's -
@@ -178,5 +265,15 @@ def analyze_page_throttled(jpeg_bytes, region, queries, max_concurrency):
     call at a time, while still respecting the account's Textract TPS
     quota via this cap."""
     semaphore = _get_semaphore(max_concurrency)
-    with semaphore:
-        return analyze_page(jpeg_bytes, region, queries)
+    last_error = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        # The semaphore is released between attempts on purpose: holding a
+        # concurrency slot while sleeping would throttle everyone else too.
+        with semaphore:
+            try:
+                return analyze_page(jpeg_bytes, region, queries, features=features)
+            except Exception as exc:  # noqa: BLE001 - retried below, re-raised at the end
+                last_error = exc
+        if attempt < RETRY_ATTEMPTS:
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    raise last_error

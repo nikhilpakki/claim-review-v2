@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Accounts - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<h1>Accounts</h1>
+<p class="hint">
+  Everyone shares the same claim bundles, OCR results and rules; what differs per person is which
+  rules they have switched on, the folder they are reviewing, and their own claims dataset.
+</p>
+
+{% if error %}<div class="notice notice-error">{{ error }}</div>{% endif %}
+{% if message %}<div class="notice notice-info">{{ message }}</div>{% endif %}
+
+<ul class="dir-list">
+  {% for user in users %}
+  <li>
+    <div class="fetch-history-row">
+      <span><strong>{{ user.display_name }}</strong> <span class="mono">({{ user.username }})</span></span>
+      {% if user.is_admin %}<span class="tag tag-document">administrator</span>{% endif %}
+      {% if not user.is_active %}<span class="tag tag-nodata">deactivated</span>{% endif %}
+      <form method="post" style="display:inline;">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="toggle_admin">
+        <button type="submit" class="btn-secondary">{{ 'Revoke admin' if user.is_admin else 'Make admin' }}</button>
+      </form>
+      <form method="post" style="display:inline;">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="toggle_active">
+        <button type="submit" class="btn-secondary">{{ 'Deactivate' if user.is_active else 'Reactivate' }}</button>
+      </form>
+      <form method="post" style="display:inline;">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="password">
+        <input type="password" name="password" placeholder="New password" autocomplete="new-password"
+               style="padding:0.35rem 0.5rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+        <button type="submit" class="btn-secondary">Set</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+
+<h3>Add an account</h3>
+<form method="post" class="settings-form">
+  <input type="hidden" name="action" value="create">
+  <div class="settings-field">
+    <label for="new-username">Username</label>
+    <input type="text" id="new-username" name="username" required>
+  </div>
+  <div class="settings-field">
+    <label for="new-display">Display name (optional)</label>
+    <input type="text" id="new-display" name="display_name">
+  </div>
+  <div class="settings-field">
+    <label for="new-password">Password</label>
+    <input type="password" id="new-password" name="password" autocomplete="new-password" required
+           style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+    <p class="settings-help">At least 8 characters.</p>
+  </div>
+  <label class="settings-checkbox">
+    <input type="checkbox" name="is_admin"><span>Administrator</span>
+  </label>
+  <div class="settings-actions"><button type="submit">Create account</button></div>
+</form>
+{% endblock %}

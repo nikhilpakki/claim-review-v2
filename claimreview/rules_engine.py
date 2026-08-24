@@ -18,7 +18,7 @@ import os
 from flask import current_app
 
 from . import (claim_extract, claim_scanner, claim_summary, classify, csv_data,
-               search, settings_store)
+               search, settings_store, users)
 from .db import get_db
 
 RULE_TYPES = ("field_present", "field_consistency", "length_of_stay", "documents_present")
@@ -59,10 +59,30 @@ def _normalize_config(rule_type, config):
     return config
 
 
-def list_rules():
+def list_rules(user_id=None):
+    """Every rule, with `enabled` reflecting this user's own choice.
+
+    Rules are defined centrally by an administrator; whether one is active is
+    a personal preference. `default_enabled` keeps the central value so the UI
+    can show when someone has departed from it, and a rule the user has never
+    touched simply follows that default - so a newly added rule is live for
+    everyone at once instead of staying invisible until each person opts in.
+    """
     db = get_db()
     rows = db.execute("SELECT * FROM rules ORDER BY id").fetchall()
-    return [dict(r, config=_normalize_config(r["rule_type"], json.loads(r["config_json"]))) for r in rows]
+    overrides = users.rule_preferences(user_id) if user_id else {}
+    rules = []
+    for r in rows:
+        default_enabled = bool(r["enabled"])
+        enabled = overrides.get(r["id"], default_enabled)
+        rules.append(dict(
+            r,
+            config=_normalize_config(r["rule_type"], json.loads(r["config_json"])),
+            enabled=enabled,
+            default_enabled=default_enabled,
+            user_overridden=r["id"] in overrides and enabled != default_enabled,
+        ))
+    return rules
 
 
 def get_rule(rule_id):
@@ -103,7 +123,7 @@ def set_rule_enabled(rule_id, enabled):
 
 # --------------------------------------------------------------- helpers
 
-def _procedure_codes_match(claim_id, config):
+def _procedure_codes_match(claim_id, config, user_id=None):
     """Whether `rule` (via its config's procedure_codes list) applies to this
     claim. ["All"] (the default, case-insensitive) always matches; otherwise
     the claim's CSV 'procedure_code' column must be one of the configured
@@ -112,7 +132,7 @@ def _procedure_codes_match(claim_id, config):
     if any(str(c).strip().lower() == "all" for c in codes):
         return True, None
 
-    row = csv_data.get_claim_row(claim_id)
+    row = csv_data.get_claim_row(claim_id, user_id)
     claim_code = (row or {}).get("procedure_code")
     claim_code = claim_code.strip() if isinstance(claim_code, str) else (str(claim_code).strip() if claim_code else "")
     if not claim_code:
@@ -441,7 +461,7 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
 
 def _evaluate_length_of_stay(claim_id, docs, config, settings, ctx):
     content_type_cache = ctx["content_types"]
-    row = csv_data.get_claim_row(claim_id)
+    row = csv_data.get_claim_row(claim_id, ctx.get("user_id"))
     if not row:
         return {"status": "no_data", "message": "No CSV row for this claim"}
 
@@ -656,7 +676,7 @@ def _dedupe_by_hash(docs):
     return list(seen.values())
 
 
-def evaluate_rules(claim_id, claim_path, docs=None, settings=None):
+def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None):
     """Every enabled rule's live result for this claim. `docs` can be an
     already-scanned claim_scanner.scan_claim_cached() list, when the caller
     (e.g. the claims-list home page, which also needs it for quality
@@ -672,17 +692,22 @@ def evaluate_rules(claim_id, claim_path, docs=None, settings=None):
     # different names collapse to one entry in the deduped list, and a rule
     # that asks "is this declared file on disk?" would then report the
     # dropped name as missing.
+    if user_id is None:
+        user_id = users.current_user_id()
     ctx = {
         "content_types": {},
+        # Rules cross-check against the claims dataset, and that is per user:
+        # their own upload if they have one, else the shared fetched rows.
+        "user_id": user_id,
         "file_names": {doc["file_name"].lower() for doc in docs},
         "claim_path": claim_path,
     }
     docs = _dedupe_by_hash(docs)
     results = []
-    for rule in list_rules():
+    for rule in list_rules(user_id):
         if not rule["enabled"]:
             continue
-        applies, reason = _procedure_codes_match(claim_id, rule["config"])
+        applies, reason = _procedure_codes_match(claim_id, rule["config"], user_id)
         if not applies:
             outcome = {"status": "no_data", "message": f"Not applicable to this claim ({reason})"}
         else:

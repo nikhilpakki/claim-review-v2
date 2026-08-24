@@ -2,7 +2,7 @@ from flask import Flask
 
 from config import Config, init_dirs
 
-from . import root_state
+from . import root_state, users
 from .db import init_db
 
 
@@ -13,8 +13,10 @@ def create_app(config_class=Config):
     init_dirs(config_class)
     init_db(app)
 
-    from .routes import browse, claims, fetch, process, search_routes, documents, review, settings, rules
+    from .routes import (auth, browse, claims, fetch, process, search_routes,
+                         documents, review, settings, rules)
 
+    app.register_blueprint(auth.bp)
     app.register_blueprint(browse.bp)
     app.register_blueprint(claims.bp)
     app.register_blueprint(fetch.bp)
@@ -30,6 +32,39 @@ def create_app(config_class=Config):
         # in the database died with the previous process.
         from .fetch import runs as fetch_runs
         fetch_runs.mark_interrupted_runs()
+
+        # A fresh deployment needs one account to sign in with; this does
+        # nothing once any user exists.
+        created = users.ensure_bootstrap_admin(
+            app.config.get("BOOTSTRAP_ADMIN_USER"),
+            app.config.get("BOOTSTRAP_ADMIN_PASSWORD"))
+        if created:
+            app.logger.warning(
+                "Created initial administrator %r from BOOTSTRAP_ADMIN_USER. "
+                "Change the password and remove it from the environment.",
+                app.config.get("BOOTSTRAP_ADMIN_USER"))
+
+    @app.before_request
+    def require_login():
+        """Closed by default: this holds patient data, so a page is reachable
+        only from a signed-in session unless it is explicitly public."""
+        from flask import request
+        from .routes.auth import PUBLIC_ENDPOINTS
+        endpoint = request.endpoint or ""
+        if endpoint in PUBLIC_ENDPOINTS:
+            return None
+        if users.current_user() is None:
+            from flask import jsonify, redirect, url_for
+            # An API call gets JSON; only a page navigation gets a redirect,
+            # so a polling request cannot silently receive the login HTML.
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Not signed in"}), 401
+            return redirect(url_for("auth.login", next=request.full_path.rstrip("?")))
+        return None
+
+    @app.context_processor
+    def inject_user():
+        return {"current_user": users.current_user()}
 
     @app.context_processor
     def inject_active_root():

@@ -28,6 +28,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
+from . import users
 from .db import get_db
 
 # Bump when classify.py / rules_engine.py change in a way that alters results
@@ -48,31 +49,38 @@ def _digest(*parts):
     return h.hexdigest()
 
 
-def _rules_signature():
+def _rules_signature(user_id=None):
+    """The rules as *this user* sees them: the central definition plus their
+    own enable/disable overrides. Without the overrides in the key, toggling a
+    rule off would leave the previous badge counts in place."""
     rows = get_db().execute(
         "SELECT id, rule_type, config_json, enabled FROM rules ORDER BY id"
     ).fetchall()
-    return [tuple(row) for row in rows]
+    overrides = users.rule_preferences(user_id) if user_id else {}
+    return [(row["id"], row["rule_type"], row["config_json"],
+             int(overrides.get(row["id"], row["enabled"]))) for row in rows]
 
 
-def _csv_signature():
+def _csv_signature(user_id=None):
     """Version of the claims dataset, not its contents: every write path
     (manual upload and fetch upsert) updates csv_upload_meta, so this changes
     whenever any row could have changed."""
     row = get_db().execute(
-        "SELECT filename, uploaded_at, row_count FROM csv_upload_meta WHERE id=1"
+        "SELECT owner_user_id, filename, uploaded_at, row_count FROM csv_upload_meta "
+        "WHERE owner_user_id IN (?, ?) ORDER BY owner_user_id DESC LIMIT 1",
+        (user_id or users.SHARED_OWNER_ID, users.SHARED_OWNER_ID),
     ).fetchone()
     return tuple(row) if row else None
 
 
-def global_fingerprint(settings):
+def global_fingerprint(settings, user_id=None):
     """The part of the key shared by every claim on the page - computed once
     per request, not once per claim."""
     return _digest(
         ROLLUP_VERSION,
         sorted(settings.items()),
-        _rules_signature(),
-        _csv_signature(),
+        _rules_signature(user_id),
+        _csv_signature(user_id),
     )
 
 
@@ -83,12 +91,13 @@ def claim_key(global_fp, doc_hashes, extract_version=None):
     return _digest(global_fp, sorted(set(doc_hashes)), extract_version)
 
 
-def get_all():
+def get_all(user_id=None):
     """{claim_id: (cache_key, rollup)} for every cached claim, read in one
     query - the claims list needs most of them, and one round trip beats one
     per claim."""
     rows = get_db().execute(
-        "SELECT claim_id, cache_key, rollup_json FROM claim_rollup_cache"
+        "SELECT claim_id, cache_key, rollup_json FROM claim_rollup_cache WHERE user_id=?",
+        (user_id or users.SHARED_OWNER_ID,),
     ).fetchall()
     out = {}
     for row in rows:
@@ -99,19 +108,20 @@ def get_all():
     return out
 
 
-def put_many(entries):
+def put_many(entries, user_id=None):
     """entries: [(claim_id, cache_key, rollup)]. One row per claim - a new key
     replaces the old, so this table stays the size of the folder."""
     if not entries:
         return
     now = datetime.now(timezone.utc).isoformat()
     db = get_db()
+    owner = user_id or users.SHARED_OWNER_ID
     db.executemany(
-        "INSERT INTO claim_rollup_cache (claim_id, cache_key, rollup_json, computed_at) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(claim_id) DO UPDATE SET cache_key=excluded.cache_key, "
+        "INSERT INTO claim_rollup_cache (user_id, claim_id, cache_key, rollup_json, computed_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, claim_id) DO UPDATE SET cache_key=excluded.cache_key, "
         "rollup_json=excluded.rollup_json, computed_at=excluded.computed_at",
-        [(claim_id, key, json.dumps(rollup), now) for claim_id, key, rollup in entries],
+        [(owner, claim_id, key, json.dumps(rollup), now) for claim_id, key, rollup in entries],
     )
     db.commit()
 

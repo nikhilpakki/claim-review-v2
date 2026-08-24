@@ -10,6 +10,7 @@ import io
 import json
 from datetime import datetime, timezone
 
+from . import users
 from .db import get_db
 
 
@@ -21,7 +22,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def upload_csv(file_storage):
+def upload_csv(file_storage, owner_user_id=None):
     """file_storage: a werkzeug FileStorage from request.files. Replaces
     whatever claims dataset was previously loaded. Returns {row_count, columns}."""
     raw = file_storage.read()
@@ -38,25 +39,30 @@ def upload_csv(file_storage):
         if reg_id:
             rows.append((reg_id, row))
 
+    # An upload replaces this user's own dataset only. The shared rows a fetch
+    # populates stay put, and other reviewers are untouched.
+    owner = owner_user_id or users.SHARED_OWNER_ID
     db = get_db()
-    db.execute("DELETE FROM csv_claims_data")
+    db.execute("DELETE FROM csv_claims_data WHERE owner_user_id=?", (owner,))
     for reg_id, row in rows:
         db.execute(
-            "INSERT OR REPLACE INTO csv_claims_data (registration_id, row_json) VALUES (?, ?)",
-            (reg_id, json.dumps(row)),
+            "INSERT OR REPLACE INTO csv_claims_data (owner_user_id, registration_id, row_json) "
+            "VALUES (?, ?, ?)",
+            (owner, reg_id, json.dumps(row)),
         )
     db.execute(
-        "INSERT INTO csv_upload_meta (id, filename, uploaded_at, row_count, columns_json) "
-        "VALUES (1, ?, ?, ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, uploaded_at=excluded.uploaded_at, "
-        "row_count=excluded.row_count, columns_json=excluded.columns_json",
-        (file_storage.filename or "upload.csv", _now(), len(rows), json.dumps(columns)),
+        "INSERT INTO csv_upload_meta (owner_user_id, filename, uploaded_at, row_count, columns_json) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(owner_user_id) DO UPDATE SET filename=excluded.filename, "
+        "uploaded_at=excluded.uploaded_at, row_count=excluded.row_count, "
+        "columns_json=excluded.columns_json",
+        (owner, file_storage.filename or "upload.csv", _now(), len(rows), json.dumps(columns)),
     )
     db.commit()
     return {"row_count": len(rows), "columns": columns}
 
 
-def upsert_claim_rows(rows, source="fetch"):
+def upsert_claim_rows(rows, source="fetch", owner_user_id=None):
     """Merge claim rows fetched straight from the warehouse into the dataset.
 
     Unlike upload_csv(), this does NOT clear what is already there: a fetch
@@ -74,7 +80,8 @@ def upsert_claim_rows(rows, source="fetch"):
     # The rule builder's field list comes from csv_upload_meta.columns; union
     # rather than overwrite, so a rule that references a column only present in
     # a previously uploaded CSV keeps resolving.
-    meta = get_upload_meta()
+    owner = owner_user_id if owner_user_id is not None else users.SHARED_OWNER_ID
+    meta = get_upload_meta(owner)
     columns = list(meta["columns"]) if meta else []
     for row in rows:
         for column in row:
@@ -83,38 +90,51 @@ def upsert_claim_rows(rows, source="fetch"):
 
     db = get_db()
     db.executemany(
-        "INSERT OR REPLACE INTO csv_claims_data (registration_id, row_json) VALUES (?, ?)",
+        "INSERT OR REPLACE INTO csv_claims_data (owner_user_id, registration_id, row_json) "
+        "VALUES (?, ?, ?)",
         [
-            ((row.get("registration_id") or "").strip(), json.dumps(row))
+            (owner, (row.get("registration_id") or "").strip(), json.dumps(row))
             for row in rows
         ],
     )
-    total = db.execute("SELECT COUNT(*) FROM csv_claims_data").fetchone()[0]
+    total = db.execute(
+        "SELECT COUNT(*) FROM csv_claims_data WHERE owner_user_id=?", (owner,)).fetchone()[0]
     db.execute(
-        "INSERT INTO csv_upload_meta (id, filename, uploaded_at, row_count, columns_json) "
-        "VALUES (1, ?, ?, ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET filename=excluded.filename, uploaded_at=excluded.uploaded_at, "
-        "row_count=excluded.row_count, columns_json=excluded.columns_json",
-        (source, _now(), total, json.dumps(columns)),
+        "INSERT INTO csv_upload_meta (owner_user_id, filename, uploaded_at, row_count, columns_json) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(owner_user_id) DO UPDATE SET filename=excluded.filename, "
+        "uploaded_at=excluded.uploaded_at, row_count=excluded.row_count, "
+        "columns_json=excluded.columns_json",
+        (owner, source, _now(), total, json.dumps(columns)),
     )
     db.commit()
     return len(rows)
 
 
-def get_claim_row(claim_id):
-    """The uploaded CSV row for this claim, as a {column: value} dict, or
-    None if no dataset is loaded or it has no row for this claim."""
-    db = get_db()
-    row = db.execute(
-        "SELECT row_json FROM csv_claims_data WHERE registration_id=?", (claim_id,)
+def get_claim_row(claim_id, user_id=None):
+    """This claim's row as the given user sees it.
+
+    Their own uploaded row wins; otherwise the shared row a fetch populated.
+    That way a reviewer can bring their own spreadsheet without losing the
+    metadata every fetched claim already has.
+    """
+    row = get_db().execute(
+        "SELECT row_json FROM csv_claims_data "
+        "WHERE registration_id=? AND owner_user_id IN (?, ?) "
+        "ORDER BY owner_user_id DESC LIMIT 1",
+        (claim_id, user_id or users.SHARED_OWNER_ID, users.SHARED_OWNER_ID),
     ).fetchone()
     return json.loads(row["row_json"]) if row else None
 
 
-def get_upload_meta():
+def get_upload_meta(user_id=None):
+    """The dataset description this user is working against - their own upload
+    if they have one, else the shared fetched dataset."""
     db = get_db()
     row = db.execute(
-        "SELECT filename, uploaded_at, row_count, columns_json FROM csv_upload_meta WHERE id=1"
+        "SELECT filename, uploaded_at, row_count, columns_json FROM csv_upload_meta "
+        "WHERE owner_user_id IN (?, ?) ORDER BY owner_user_id DESC LIMIT 1",
+        (user_id or users.SHARED_OWNER_ID, users.SHARED_OWNER_ID),
     ).fetchone()
     if not row:
         return None
@@ -122,16 +142,19 @@ def get_upload_meta():
             "row_count": row["row_count"], "columns": json.loads(row["columns_json"])}
 
 
-def get_available_fields():
+def get_available_fields(user_id=None):
     """Column names from the currently loaded dataset, for the rule
     builder's autocomplete - empty list (not an error) if nothing's loaded,
     since rules can be configured before any CSV is uploaded."""
-    meta = get_upload_meta()
+    meta = get_upload_meta(user_id)
     return meta["columns"] if meta else []
 
 
-def clear_csv_data():
+def clear_csv_data(owner_user_id=None):
+    """Clear one dataset. A reviewer clearing theirs falls back to the shared
+    fetched rows; only an explicit shared clear removes those."""
+    owner = owner_user_id if owner_user_id is not None else users.SHARED_OWNER_ID
     db = get_db()
-    db.execute("DELETE FROM csv_claims_data")
-    db.execute("DELETE FROM csv_upload_meta")
+    db.execute("DELETE FROM csv_claims_data WHERE owner_user_id=?", (owner,))
+    db.execute("DELETE FROM csv_upload_meta WHERE owner_user_id=?", (owner,))
     db.commit()

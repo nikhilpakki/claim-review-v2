@@ -81,3 +81,25 @@
     if (e.key === 'Escape' && !modal.hidden) close();
   });
 })();
+
+(function () {
+  // "Reprocess those documents" on the different-OCR-profile notice. Sends the
+  // force flag so the run re-analyzes exactly the stale documents; everything
+  // already matching the current profile stays a free cache hit.
+  const btn = document.getElementById('reprocess-stale-btn');
+  if (!btn) return;
+  const statusEl = document.getElementById('reprocess-stale-status');
+  btn.addEventListener('click', () => {
+    if (!window.confirm('Re-send those documents to Textract? This is charged per page.')) return;
+    btn.disabled = true;
+    statusEl.textContent = 'Starting...';
+    fetch('/api/claims/' + encodeURIComponent(btn.dataset.claimId) + '/process?force=stale',
+          { method: 'POST' })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.error) { btn.disabled = false; statusEl.textContent = data.error; return; }
+        statusEl.textContent = 'Reprocessing ' + data.total + ' document(s) - reload when it finishes.';
+      })
+      .catch(() => { btn.disabled = false; statusEl.textContent = 'Could not start'; });
+  });
+})();

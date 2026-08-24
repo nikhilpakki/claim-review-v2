@@ -1,0 +1,39 @@
+# systemd unit for the claim review tool.
+#   sudo cp deploy/claim-review.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now claim-review
+#
+# Replaces running the dev server inside tmux: survives logout and reboot,
+# restarts on crash, and writes to the journal instead of a scrollback buffer.
+[Unit]
+Description=Claim Review tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/claim-review
+EnvironmentFile=/opt/claim-review/.env
+
+# One worker, many threads - see wsgi.py for why the worker count must stay 1.
+# --timeout 0 because a request never does the long work (fetching and
+# processing run on background threads), but Textract calls inside a request
+# can still be slow, and a worker killed mid-flight loses in-memory progress.
+ExecStart=/opt/claim-review/.venv/bin/gunicorn \
+    --workers 1 \
+    --threads 16 \
+    --worker-class gthread \
+    --bind 127.0.0.1:5000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile - \
+    wsgi:app
+
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

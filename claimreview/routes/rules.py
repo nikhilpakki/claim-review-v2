@@ -2,7 +2,8 @@ from urllib.parse import quote
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
-from .. import csv_data, procedure_codes, rules_engine
+from .. import csv_data, procedure_codes, rules_engine, users
+from .auth import admin_required
 
 bp = Blueprint("rules", __name__)
 
@@ -37,10 +38,13 @@ def _redirect_to_rules(**extra_args):
 
 
 def _rules_context(**extra):
+    user_id = users.current_user_id()
+    user = users.current_user()
     return {
-        "rules": rules_engine.list_rules(),
-        "upload_meta": csv_data.get_upload_meta(),
-        "available_fields": csv_data.get_available_fields(),
+        "rules": rules_engine.list_rules(user_id),
+        "is_admin": bool(user and user["is_admin"]),
+        "upload_meta": csv_data.get_upload_meta(user_id),
+        "available_fields": csv_data.get_available_fields(user_id),
         "query_aliases": [q["Alias"] for q in current_app.config["DEFAULT_QUERIES"]],
         "procedure_codes": procedure_codes.list_procedure_codes(),
         "doc_scope_tags": rules_engine.DOC_SCOPE_TAGS,
@@ -163,7 +167,7 @@ def upload_csv():
             return _fragments(status="error", upload_error=error), 400
         return render_template("rules.html", **_rules_context(upload_error=error)), 400
     try:
-        csv_data.upload_csv(file)
+        csv_data.upload_csv(file, owner_user_id=users.current_user_id())
     except csv_data.CsvUploadError as exc:
         if _is_ajax():
             return _fragments(status="error", upload_error=str(exc)), 400
@@ -176,13 +180,14 @@ def upload_csv():
 
 @bp.route("/rules/clear-data", methods=["POST"])
 def clear_data():
-    csv_data.clear_csv_data()
+    csv_data.clear_csv_data(owner_user_id=users.current_user_id())
     if _is_ajax():
         return _fragments(status="saved")
     return _redirect_to_rules()
 
 
 @bp.route("/rules/create", methods=["POST"])
+@admin_required
 def create_rule():
     name = (request.form.get("name") or "").strip()
     rule_type = request.form.get("rule_type")
@@ -206,6 +211,7 @@ def create_rule():
 
 
 @bp.route("/rules/<int:rule_id>/update", methods=["POST"])
+@admin_required
 def update_rule(rule_id):
     rule = rules_engine.get_rule(rule_id)
     if not rule:
@@ -235,6 +241,7 @@ def update_rule(rule_id):
 
 
 @bp.route("/rules/<int:rule_id>/delete", methods=["POST"])
+@admin_required
 def delete_rule(rule_id):
     rules_engine.delete_rule(rule_id)
     if _is_ajax():
@@ -244,9 +251,23 @@ def delete_rule(rule_id):
 
 @bp.route("/rules/<int:rule_id>/toggle", methods=["POST"])
 def toggle_rule(rule_id):
-    rule = rules_engine.get_rule(rule_id)
+    """Switching a rule on or off is a personal preference, not an edit.
+
+    It writes an override for the signed-in user, so one reviewer muting a
+    noisy rule does not mute it for everyone. An administrator who wants a rule
+    off for the whole team edits the rule itself.
+    """
+    user_id = users.current_user_id()
+    rules = {r["id"]: r for r in rules_engine.list_rules(user_id)}
+    rule = rules.get(rule_id)
     if rule:
-        rules_engine.set_rule_enabled(rule_id, not rule["enabled"])
+        wanted = not rule["enabled"]
+        if wanted == rule["default_enabled"]:
+            # Back in line with the central default - drop the override so the
+            # rule keeps following it if an admin changes it later.
+            users.clear_rule_preference(user_id, rule_id)
+        else:
+            users.set_rule_preference(user_id, rule_id, wanted)
     if _is_ajax():
         return _fragments(status="saved")
     return _redirect_to_rules()

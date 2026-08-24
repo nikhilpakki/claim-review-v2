@@ -13,6 +13,7 @@
   {% for group_name, fields in groups %}
   <fieldset class="settings-group">
     <legend>{{ group_name }}</legend>
+    {% if 'Advanced' in group_name %}<p class="settings-help" style="margin:0 0 0.6rem;">{{ always_on_note }}</p>{% endif %}
     {% for key, label, help in fields %}
     <div class="settings-field">
       {% if values[key] is boolean %}
@@ -20,6 +21,11 @@
         <input type="checkbox" name="{{ key }}" {% if values[key] %}checked{% endif %}>
         <span>{{ label }}</span>
       </label>
+      {% elif types[key] is sameas string_type %}
+      <label for="field-{{ key }}">{{ label }}</label>
+      <textarea id="field-{{ key }}" name="{{ key }}" rows="8" spellcheck="false"
+                placeholder="{{ placeholders.get(key, '') }}"
+                style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-family:ui-monospace, Menlo, Consolas, monospace; font-size:0.82rem;">{{ values[key] }}</textarea>
       {% else %}
       <label for="field-{{ key }}">{{ label }}</label>
       <input type="number" step="any" id="field-{{ key }}" name="{{ key }}" value="{{ values[key] }}">
@@ -72,8 +78,16 @@
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         body: new FormData(target),
       })
-        .then((r) => { if (!r.ok) throw new Error('save failed'); return r.json(); })
-        .then((data) => onSuccess(data))
+        .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+          // A rejected save carries the reason (e.g. a malformed query line);
+          // showing 'try again' instead would hide what needs fixing.
+          if (!ok || data.status === 'error') {
+            flash(data.error || 'Could not save', true);
+            return;
+          }
+          onSuccess(data);
+        })
         .catch(() => flash('Could not save - try again', true));
     };
   }

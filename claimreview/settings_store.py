@@ -38,6 +38,13 @@ TUNABLE_KEYS = {
     "CORRECTION_ZSCORE_THRESHOLD": float,
     "CORRECTION_HOTSPOT_MIN_COUNT": int,
     "ENABLE_FACE_CHECK": bool,
+    # Textract features. Changing these affects newly processed documents;
+    # already-cached ones are flagged as stale instead of silently re-billed
+    # (see textract_profile.py).
+    "ENABLE_TEXTRACT_TABLES": bool,
+    "ENABLE_TEXTRACT_SIGNATURES": bool,
+    "ENABLE_TEXTRACT_QUERIES": bool,
+    "TEXTRACT_QUERIES": str,
     "FACE_CONFIDENCE_THRESHOLD": float,
     "FACE_DETECTION_DPI": int,
 }

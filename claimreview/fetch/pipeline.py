@@ -82,8 +82,13 @@ class FetchOptions:
     # this stays off unless a caller explicitly asks (the CLI's --cleanup).
     cleanup: bool = False
     collect_claim_rows: bool = True
+    # Claims whose folder already exists are skipped rather than downloaded
+    # again - the expensive part of a fetch is S3, and re-pulling a bundle
+    # someone else already fetched buys nothing.
+    skip_existing: bool = True
 
     source_table: str = DEFAULT_SOURCE_TABLE
+    lookup_tables: list[str] | None = None
     target_schema: str = DEFAULT_TARGET_SCHEMA
     source_bucket: str = downloader.DEFAULT_SOURCE_BUCKET
     claim_workers: int = 8
@@ -565,6 +570,7 @@ def select_claims(
     if options.claim_ids:
         claims = queries.fetch_claims_by_ids(
             connection, list(options.claim_ids), options.source_table, filters,
+            fallback_tables=options.lookup_tables,
         )
         source_desc = f"specified claim ids ({len(options.claim_ids)})"
     else:
@@ -635,8 +641,22 @@ def run_pipeline(
         if options.collect_claim_rows and claim_ids:
             try:
                 claim_rows = queries.fetch_claim_rows(
-                    connection, claim_ids, options.source_table
+                    connection, claim_ids, options.source_table,
+                    fallback_tables=options.lookup_tables,
                 )
+                # Say so when a claim has no row anywhere: its claims-data
+                # column will be empty, and a silent dash is indistinguishable
+                # from a bug (which is exactly how this was first reported).
+                found = {row.get("registration_id") for row in claim_rows}
+                unmatched = [claim_id for claim_id in claim_ids if claim_id not in found]
+                if unmatched:
+                    shown = ", ".join(unmatched[:10])
+                    emit.log(
+                        f"{len(unmatched)} of {len(claim_ids)} claim(s) have no row in any "
+                        f"claim table, so their claims-data columns stay empty: {shown}"
+                        + (" ..." if len(unmatched) > 10 else ""),
+                        level="warning",
+                    )
             except Exception as exc:  # noqa: BLE001 - metadata is a nice-to-have
                 emit.log(
                     f"claim metadata lookup failed: {type(exc).__name__}: {exc}",
@@ -670,10 +690,41 @@ def run_pipeline(
     done_lock = threading.Lock()
     done = 0
 
+    def _already_downloaded(claim_id: str) -> bool:
+        """A claim counts as present when its folder holds at least one
+        downloaded file. A bare folder (an interrupted run, or one deleted
+        down to the manifest) is not enough to skip on."""
+        folder = destination / claim_id
+        if not folder.is_dir():
+            return False
+        for path in folder.rglob("*"):
+            if path.is_file() and path.name != "manifest.json":
+                return True
+        return False
+
     def _work(item: tuple[str, str | None]) -> dict[str, Any]:
         nonlocal done
         claim_id, preauth_path = item
-        if cancelled():
+        if options.skip_existing and _already_downloaded(claim_id):
+            # Extraction still runs: it is local, cheap, and the mirrored
+            # datasets may be missing or stale even when the files are there.
+            started = now()
+            try:
+                tables = extract_claim(
+                    claim_id, destination / claim_id, run_id, ingestion_date, started)
+                result = {
+                    "registration_id": claim_id, "download_status": "already_downloaded",
+                    "extraction_status": "SUCCESS", "tables": tables, "error": None,
+                    "started_at": started, "completed_at": now(),
+                }
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "registration_id": claim_id, "download_status": "already_downloaded",
+                    "extraction_status": "FAILED", "tables": None,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "started_at": started, "completed_at": now(),
+                }
+        elif cancelled():
             result = {
                 "registration_id": claim_id,
                 "download_status": "CANCELLED",

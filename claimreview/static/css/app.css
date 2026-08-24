@@ -522,3 +522,10 @@ a.ocr-lookup-link { color: var(--accent); text-decoration: underline; cursor: po
 .claim-run-tag {
   font-size: 0.7rem; color: var(--muted-2); font-family: ui-monospace, Menlo, Consolas, monospace;
 }
+
+.claim-narrative {
+  margin: 0; padding: 0.85rem 1rem; background: var(--panel);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  max-height: 26rem; overflow: auto; white-space: pre-wrap;
+  font-family: inherit; font-size: 0.86rem; line-height: 1.55;
+}

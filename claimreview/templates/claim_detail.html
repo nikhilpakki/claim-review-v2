@@ -160,6 +160,41 @@
 </div>
 {% endif %}
 
+{% if profile_notice %}
+<div class="notice notice-warn" id="profile-notice">
+  <strong>{{ profile_notice.unique_documents }} document(s) were analysed under a different OCR profile.</strong>
+  Reprocessing them would add {{ profile_notice.description }}.
+  Nothing is re-sent to Textract until you ask, because re-analysis is charged per page.
+  <div style="margin-top:0.5rem;">
+    <button type="button" class="btn-secondary" id="reprocess-stale-btn"
+            data-claim-id="{{ claim_id }}">Reprocess those documents</button>
+    <span class="hint" id="reprocess-stale-status"></span>
+  </div>
+</div>
+{% endif %}
+
+{% if discharge_summary %}
+<div class="claim-summary-panel">
+  <h2 style="font-size:1rem; margin:0 0 0.4rem;">Discharge summary</h2>
+  <p class="settings-help" style="margin:0 0 0.5rem;">
+    Narrative text taken from the document's own structure, under the heading
+    &ldquo;{{ discharge_summary.title }}&rdquo; in
+    <span class="mono">{{ discharge_summary.file }}</span>, page {{ discharge_summary.page }}{% if discharge_summary.pages > 1 %}
+    (spanning {{ discharge_summary.pages }} pages){% endif %} &middot; matched {{ discharge_summary.method }} {{ discharge_summary.score }}.
+    This is prose, so it is never a key/value pair - it comes from LAYOUT, not FORMS.
+  </p>
+  <pre class="claim-narrative">{{ discharge_summary.text }}</pre>
+</div>
+{% elif has_sections %}
+<div class="claim-summary-panel">
+  <h2 style="font-size:1rem; margin:0 0 0.4rem;">Discharge summary</h2>
+  <p class="settings-help" style="margin:0;">
+    No section heading in this claim matched a discharge-summary phrasing. The documents do carry
+    section structure, so this is an absence of a matching heading rather than missing OCR data.
+  </p>
+</div>
+{% endif %}
+
 <div class="process-bar">
   <button id="process-btn" data-claim-id="{{ claim_id }}">Process Claim</button>
   <span class="progress-status" id="process-status"></span>

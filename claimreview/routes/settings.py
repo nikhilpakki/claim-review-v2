@@ -1,8 +1,10 @@
 from urllib.parse import quote
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import (Blueprint, current_app, jsonify, redirect, render_template,
+                   request, url_for)
 
-from .. import settings_store
+from .. import settings_store, textract_profile, users
+from .auth import admin_required
 
 bp = Blueprint("settings", __name__)
 
@@ -74,19 +76,51 @@ FIELD_GROUPS = [
         ("FACE_CONFIDENCE_THRESHOLD", "Face confidence threshold", "0-1 detector score a face must clear to count. Lower catches more faces but more false positives; the Haar-cascade fallback (used only if the YuNet model file is missing) has no real confidence score and always reports 1.0."),
         ("FACE_DETECTION_DPI", "PDF rasterization DPI", "Resolution used to render PDF pages when a document is first processed - higher can help detect small/distant faces. Only affects documents processed after this is changed; already-processed documents need a real reprocess to pick up a new value."),
     ]),
+    ("Advanced - Textract features", [
+        ("ENABLE_TEXTRACT_TABLES", "Extract tables", "On by default. The claim summary looks in tables first for age/admission/discharge (they usually sit in a table rather than a labelled form field), and search indexes table cells. Turning this off makes each page cheaper and weakens both."),
+        ("ENABLE_TEXTRACT_SIGNATURES", "Detect signatures", "Off by default - it costs extra per page. The duplicate-signature and possible-paste checks depend on it: without it there are no signatures to analyse, so those checks find nothing rather than finding nothing wrong."),
+        ("ENABLE_TEXTRACT_QUERIES", "Ask queries", "Off by default - it costs extra per page. Queries put direct questions to Textract, and are what fill in the OCR age/admission/discharge values when no table header or form label matches."),
+        ("TEXTRACT_QUERIES", "Custom queries", "One per line, in the form shown as the placeholder. Leave the box empty to use those defaults. The alias before the colon is how the rest of the app refers to an answer - the claim summary and the length-of-stay rule read the admission, discharge and age aliases, so renaming those detaches them from what reads them. Maximum 15 queries per page (a Textract limit)."),
+    ]),
 ]
+
+# FORMS and LAYOUT are always requested, so they are stated rather than offered:
+# FORMS is the key/value backbone, and LAYOUT is the only source of narrative
+# text - a discharge summary is prose under a heading, not a key/value pair.
+ALWAYS_ON_NOTE = ("FORMS and LAYOUT are always requested. The options here are the "
+                  "ones that add a per-page cost or change how answers are keyed. "
+                  "Changing them affects newly processed documents; documents "
+                  "already processed are flagged so you can choose to reprocess.")
+
+
+def _template_context(values=None):
+    values = values if values is not None else settings_store.get_settings()
+    user = users.current_user()
+    return {
+        "is_admin": bool(user and user["is_admin"]),
+        "groups": FIELD_GROUPS,
+        "values": values,
+        "types": settings_store.TUNABLE_KEYS,
+        "string_type": str,
+        # Shown when the box is empty, so both the expected format and the
+        # current defaults are visible without having to guess at either.
+        "placeholders": {
+            "TEXTRACT_QUERIES": textract_profile.format_queries(
+                current_app.config["DEFAULT_QUERIES"]),
+        },
+        "always_on_note": ALWAYS_ON_NOTE,
+        "back_url": _safe_next() or url_for("claims.list_claims_view"),
+        "next_qs": _next_qs(),
+    }
 
 
 @bp.route("/settings")
 def view_settings():
-    values = settings_store.get_settings()
-    return render_template("settings.html", groups=FIELD_GROUPS, values=values,
-                            types=settings_store.TUNABLE_KEYS,
-                            back_url=_safe_next() or url_for("claims.list_claims_view"),
-                            next_qs=_next_qs())
+    return render_template("settings.html", **_template_context())
 
 
 @bp.route("/settings", methods=["POST"])
+@admin_required
 def save_settings():
     parsed = {}
     for key, py_type in settings_store.TUNABLE_KEYS.items():
@@ -94,12 +128,30 @@ def save_settings():
             parsed[key] = request.form.get(key) == "on"
             continue
         raw = request.form.get(key)
+        if py_type is str:
+            # An empty text box is a real choice (fall back to the defaults),
+            # not a missing value to skip past.
+            if raw is not None:
+                parsed[key] = raw.strip()
+            continue
         if raw is None or raw.strip() == "":
             continue
         try:
             parsed[key] = py_type(raw)
         except ValueError:
             continue
+
+    # Reject a malformed query list instead of storing something that would
+    # quietly fall back to the defaults on every later run.
+    queries_text = parsed.get("TEXTRACT_QUERIES", "")
+    if queries_text:
+        try:
+            textract_profile.parse_queries(queries_text)
+        except textract_profile.QueryConfigError as exc:
+            if _is_ajax():
+                return jsonify({"status": "error", "error": str(exc)}), 400
+            return render_template("settings.html", **_template_context()), 400
+
     settings_store.update_settings(parsed)
     if _is_ajax():
         return jsonify({"status": "saved", "values": settings_store.get_settings()})
@@ -107,6 +159,7 @@ def save_settings():
 
 
 @bp.route("/settings/reset", methods=["POST"])
+@admin_required
 def reset_settings():
     settings_store.reset_settings()
     if _is_ajax():

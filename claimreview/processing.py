@@ -7,7 +7,7 @@ from flask import current_app
 
 from . import (cache_store, claim_scanner, classify, face_detector, image_quality,
                page_forensics, page_render, progress, settings_store, signature_forensics,
-               textract_client)
+               textract_client, textract_profile)
 from .db import get_db
 
 logger = logging.getLogger(__name__)
@@ -227,11 +227,14 @@ def _build_page_result(file_hash, page, analysis):
         "tables": analysis["tables"],
         "signatures": signatures,
         "queries": analysis["queries"],
+        # LAYOUT sections: the narrative structure FORMS cannot see. Empty
+        # when LAYOUT was not requested, so consumers can read it either way.
+        "sections": analysis.get("sections", []),
         **page_raw,
     }
 
 
-def process_document(doc, settings, region=None, queries=None):
+def process_document(doc, settings, region=None, queries=None, features=None, force=False):
     """Process a single scanned document dict (from claim_scanner.scan_claim)
     if not already cached. Returns (outcome, data) where outcome is 'cached'
     or 'processed' and data is the full cached-result dict (backfilled with
@@ -245,13 +248,20 @@ def process_document(doc, settings, region=None, queries=None):
     docstring. Needs a Flask app context (reads current_app.config) unless
     `region`/`queries` are passed in explicitly.
     """
-    if region is None or queries is None:
+    if region is None:
         region = current_app.config["AWS_REGION"]
-        queries = current_app.config["DEFAULT_QUERIES"]
+    default_queries = current_app.config["DEFAULT_QUERIES"]
+    if queries is None:
+        queries = textract_profile.active_queries(settings, default_queries)
+    if features is None:
+        features = textract_profile.active_features(settings)
+    profile = {"features": list(features),
+               "queries": sorted(q["Alias"] for q in queries),
+               "parser": textract_profile.PARSER_VERSION}
 
     file_hash = cache_store.hash_file(doc["abs_path"])
     cached = cache_store.load_cached_result(file_hash)
-    if cached is not None:
+    if cached is not None and not (force and textract_profile.is_stale(cached, profile)):
         changed = _backfill_signature_forensics(cached)
         changed = _backfill_page_analysis(cached) or changed
         if changed:
@@ -263,7 +273,7 @@ def process_document(doc, settings, region=None, queries=None):
 
     page_results = []
     for page in rendered:
-        analysis = textract_client.analyze_page(page["jpeg_bytes"], region, queries)
+        analysis = textract_client.analyze_page(page["jpeg_bytes"], region, queries, features=features)
         page_results.append(_build_page_result(file_hash, page, analysis))
 
     result = {
@@ -271,12 +281,15 @@ def process_document(doc, settings, region=None, queries=None):
         "file_hash": file_hash,
         "num_pages": len(page_results),
         "pages": page_results,
+        # What this analysis actually asked Textract for, so a later settings
+        # change can tell whether re-running would add anything.
+        "analysis_profile": profile,
     }
     cache_store.save_cached_result(file_hash, result)
     return "processed", result
 
 
-def process_claim(app, claim_id, claim_path):
+def process_claim(app, claim_id, claim_path, force_stale=False):
     """Runs in a background thread - pushes its own app context so
     current_app/g (config, db) work outside the request lifecycle.
 
@@ -293,7 +306,12 @@ def process_claim(app, claim_id, claim_path):
     with app.app_context():
         settings = settings_store.get_settings()
         region = current_app.config["AWS_REGION"]
-        queries = current_app.config["DEFAULT_QUERIES"]
+        default_queries = current_app.config["DEFAULT_QUERIES"]
+        queries = textract_profile.active_queries(settings, default_queries)
+        features = textract_profile.active_features(settings)
+        profile = {"features": list(features),
+                   "queries": sorted(q["Alias"] for q in queries),
+                   "parser": textract_profile.PARSER_VERSION}
         docs = claim_scanner.scan_claim(claim_path)
         progress.start(claim_id, len(docs))
         run_id = _start_run_row(claim_id, len(docs))
@@ -347,7 +365,12 @@ def process_claim(app, claim_id, claim_path):
             for doc in docs:
                 file_hash = cache_store.hash_file(doc["abs_path"])
                 cached_result = cache_store.load_cached_result(file_hash)
-                if cached_result is not None:
+                # A cache hit is reused unless the caller explicitly asked to
+                # refresh documents the current profile would add to - that is
+                # the only case where re-billing Textract buys anything.
+                reanalyze = (force_stale and cached_result is not None
+                             and textract_profile.is_stale(cached_result, profile))
+                if cached_result is not None and not reanalyze:
                     changed = _backfill_signature_forensics(cached_result)
                     changed = _backfill_page_analysis(cached_result) or changed
                     if changed:
@@ -359,21 +382,25 @@ def process_claim(app, claim_id, claim_path):
                     pages_dir = cache_store.pages_cache_dir(file_hash)
                     rendered = page_render.save_page_images(
                         doc["abs_path"], pages_dir, dpi=settings.get("FACE_DETECTION_DPI"))
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
                     failed += 1
                     progress.increment(claim_id, "failed")
+                    progress.add_failure(claim_id, doc["rel_path"],
+                                         f"render: {type(exc).__name__}: {exc}")
                     logger.exception("Failed to render %s", doc["abs_path"])
                     continue
 
                 progress.add_in_flight(claim_id, doc["rel_path"])
                 progress.increment(claim_id, "total_pages", len(rendered))
                 item = {"doc": doc, "file_hash": file_hash, "rendered": rendered,
-                        "remaining": len(rendered), "page_results": {}, "failed": False}
+                        "remaining": len(rendered), "page_results": {}, "failed": False,
+                        "error": None}
                 pending.append(item)
                 for page in rendered:
                     future = executor.submit(
                         textract_client.analyze_page_throttled,
                         page["jpeg_bytes"], region, queries, max_concurrency,
+                        features,
                     )
                     future_map[future] = (item, page)
 
@@ -385,8 +412,11 @@ def process_claim(app, claim_id, claim_path):
                 try:
                     analysis = future.result()
                     item["page_results"][page["page_number"]] = _build_page_result(item["file_hash"], page, analysis)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
                     item["failed"] = True
+                    # Keep the reason. Without it a claim just says "failed",
+                    # which tells a reviewer nothing about whether to retry.
+                    item["error"] = f"page {page['page_number']}: {type(exc).__name__}: {exc}"
                     logger.exception("Textract call failed for %s page %s", doc["abs_path"], page["page_number"])
                 progress.increment(claim_id, "pages_done")
                 item["remaining"] -= 1
@@ -398,11 +428,13 @@ def process_claim(app, claim_id, claim_path):
                 if item["failed"]:
                     failed += 1
                     progress.increment(claim_id, "failed")
+                    progress.add_failure(claim_id, doc["rel_path"], item["error"])
                     continue
 
                 ordered_pages = [item["page_results"][p["page_number"]] for p in item["rendered"]]
                 data = {"file_name": doc["rel_path"], "file_hash": item["file_hash"],
-                        "num_pages": len(ordered_pages), "pages": ordered_pages}
+                        "num_pages": len(ordered_pages), "pages": ordered_pages,
+                        "analysis_profile": profile}
                 cache_store.save_cached_result(item["file_hash"], data)
                 _finalize(doc, data, "processed")
 

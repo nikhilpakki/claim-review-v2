@@ -149,6 +149,18 @@
 
     <div class="settings-field">
       <label class="settings-checkbox">
+        <input type="checkbox" name="skip_existing" checked>
+        <span>Skip claims already downloaded</span>
+      </label>
+      <p class="settings-help">
+        A claim whose folder already holds files is not pulled from S3 again - it is still
+        re-extracted locally, which is free. Untick only to force a fresh download, for instance
+        if a bundle is thought to be incomplete.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
         <input type="checkbox" name="write_reports" checked>
         <span>Write run reports (JSON + XLSX)</span>
       </label>

@@ -1,7 +1,9 @@
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import (Blueprint, current_app, jsonify, redirect, render_template,
+                   request, url_for)
 
-from .. import (claim_amounts, claim_extract, claim_scanner, claim_summary, classify,
-                csv_data, processing, rollup_cache, root_state, rules_engine, settings_store)
+from .. import (claim_amounts, claim_extract, claim_scanner, claim_sections, claim_summary,
+                classify, csv_data, processing, rollup_cache, root_state, rules_engine,
+                settings_store, textract_profile, users)
 from ..db import get_latest_runs
 from ..fetch import runs as fetch_runs
 
@@ -14,7 +16,7 @@ def _empty_rollup():
             "face_pages": 0, "rule_violations": 0}
 
 
-def _claim_rollup(claim_id, claim_path, docs, settings):
+def _claim_rollup(claim_id, claim_path, docs, settings, user_id=None):
     """Live counts for the claims-list badges, computed fresh against
     *current* settings/rules from each already-cached, deduped document -
     not a processing_runs snapshot - so retuning a threshold or rule
@@ -52,7 +54,8 @@ def _claim_rollup(claim_id, claim_path, docs, settings):
                     rollup["duplicate_signatures"] += 1
 
     rollup["rule_violations"] = sum(
-        1 for r in rules_engine.evaluate_rules(claim_id, claim_path, docs=docs, settings=settings)
+        1 for r in rules_engine.evaluate_rules(claim_id, claim_path, docs=docs,
+                                               settings=settings, user_id=user_id)
         if r["status"] == "fail")
     return rollup
 
@@ -105,8 +108,9 @@ def list_claims_view():
     # hit is only taken when recomputing would produce the same answer - live
     # retuning still shows up immediately, it just does not re-read and
     # re-classify every claim in the folder on every page load.
-    global_fp = rollup_cache.global_fingerprint(settings)
-    cached_rollups = rollup_cache.get_all()
+    user_id = users.current_user_id()
+    global_fp = rollup_cache.global_fingerprint(settings, user_id)
+    cached_rollups = rollup_cache.get_all(user_id)
     extract_versions = claim_extract.versions()
     fresh = []
 
@@ -122,7 +126,7 @@ def list_claims_view():
                 status["rollup"] = hit[1]
             else:
                 claim_scanner.attach_cached_results(docs)
-                rollup = _claim_rollup(claim_id, claim["path"], docs, settings)
+                rollup = _claim_rollup(claim_id, claim["path"], docs, settings, user_id)
                 status["rollup"] = rollup
                 fresh.append((claim_id, key, rollup))
         else:
@@ -131,7 +135,7 @@ def list_claims_view():
         claim["preselected"] = claim_id in preselect
         claim["fetch_run"] = claim_runs.get(claim_id)
 
-    rollup_cache.put_many(fresh)
+    rollup_cache.put_many(fresh, user_id)
     # Only offer runs whose claims are actually in this folder - a run that
     # downloaded somewhere else would filter the list down to nothing.
     present = {c["claim_id"] for c in claims}
@@ -194,14 +198,40 @@ def _signature_summary(cached_result, settings):
             "duplicate_count": duplicate_count}
 
 
-def _annotated_docs(claim_path, settings):
+def _annotated_docs(claim_path, settings, profile=None):
     docs = claim_scanner.scan_claim_cached(claim_path)
     for doc in docs:
         cached_result = doc["cached_result"]
         doc["cached"] = cached_result is not None
         doc["quality"] = _quality_summary(cached_result, settings) if cached_result else None
         doc["signature_flags"] = _signature_summary(cached_result, settings) if cached_result else None
+        # Whether the current Textract profile asks for something this cached
+        # analysis cannot contain (see textract_profile.py). Only ever true when
+        # re-running would actually add data.
+        missing = (textract_profile.missing_from_cache(cached_result, profile)
+                   if cached_result and profile else {"features": [], "queries": [], "parser_gains": []})
+        doc["profile_missing"] = missing
+        doc["profile_stale"] = bool(missing["features"] or missing["queries"])
     return docs
+
+
+def _profile_notice(docs, profile):
+    """One summary of what a reprocess would add across the claim, or None."""
+    stale = [doc for doc in docs if doc.get("profile_stale")]
+    if not stale:
+        return None
+    features, queries, parser_gains = set(), set(), set()
+    for doc in stale:
+        features.update(doc["profile_missing"]["features"])
+        queries.update(doc["profile_missing"]["queries"])
+        parser_gains.update(doc["profile_missing"].get("parser_gains") or [])
+    return {
+        "documents": len(stale),
+        "unique_documents": len({doc["file_hash"] for doc in stale}),
+        "description": textract_profile.describe_missing(
+            {"features": sorted(features), "queries": sorted(queries),
+             "parser_gains": sorted(parser_gains)}),
+    }
 
 
 def _group_duplicate_docs(docs):
@@ -258,19 +288,25 @@ def claim_detail(claim_id):
         return redirect(url_for("claims.list_claims_view"))
 
     settings = settings_store.get_settings()
-    docs = _annotated_docs(claim_path, settings)
+    profile = textract_profile.current_profile(
+        settings, current_app.config["DEFAULT_QUERIES"])
+    docs = _annotated_docs(claim_path, settings, profile)
     doc_groups = _group_duplicate_docs(docs)
 
     # One read of the mirrored extraction feeds both panels below.
     extracted = claim_extract.get(claim_id)
     bundle_summary = (extracted or {}).get("claim_bundle_summary") or []
     summary = claim_summary.build_claim_summary(
-        claim_id, docs, csv_data.get_claim_row(claim_id),
+        claim_id, docs, csv_data.get_claim_row(claim_id, users.current_user_id()),
         bundle_row=bundle_summary[0] if bundle_summary else None,
     )
     amounts = claim_amounts.build_amounts_panel(extracted)
+    discharge_summary = claim_sections.build_discharge_summary(docs, settings)
     return render_template("claim_detail.html", claim_id=claim_id, doc_groups=doc_groups,
-                           summary=summary, amounts=amounts)
+                           summary=summary, amounts=amounts,
+                           discharge_summary=discharge_summary,
+                           has_sections=claim_sections.has_any_sections(docs),
+                           profile_notice=_profile_notice(docs, profile))
 
 
 @bp.route("/api/claims/<claim_id>/documents")
@@ -281,7 +317,9 @@ def api_claim_documents(claim_id):
         return jsonify({"error": "Claim not found"}), 404
 
     settings = settings_store.get_settings()
-    docs = _annotated_docs(claim_path, settings)
+    profile = textract_profile.current_profile(
+        settings, current_app.config["DEFAULT_QUERIES"])
+    docs = _annotated_docs(claim_path, settings, profile)
     for doc in docs:
         doc.pop("abs_path", None)
         doc.pop("cached_result", None)

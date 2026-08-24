@@ -1,5 +1,6 @@
 import os
 import secrets
+from datetime import timedelta
 
 from dotenv import load_dotenv
 
@@ -39,6 +40,17 @@ class Config:
     REVIEWER_NAME = os.environ.get("REVIEWER_NAME", "")
 
     SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg"}
+
+    # --- accounts ---------------------------------------------------------
+    # Used once, on a database with no users at all, to create the first
+    # administrator. Remove them from the environment afterwards.
+    BOOTSTRAP_ADMIN_USER = os.environ.get("BOOTSTRAP_ADMIN_USER", "")
+    BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD", "")
+    # Sessions are cookies signed with FLASK_SECRET_KEY. Set that in .env for a
+    # shared deployment - the random default here changes on every restart,
+    # which would sign everyone out whenever the service restarts.
+    PERMANENT_SESSION_LIFETIME = timedelta(
+        hours=int(os.environ.get("SESSION_HOURS", "12")))
 
     # Max Textract analyze_document calls in flight at once, enforced
     # *process-wide* (across every claim being batch-processed
@@ -124,6 +136,17 @@ class Config:
     )
 
     CLAIM_SOURCE_TABLE = os.environ.get("CLAIM_SOURCE_TABLE", "dmart_solution.claim_paid_t")
+    # Tables searched, in order, when resolving a claim by registration_id.
+    # claim_paid_t only holds paid claims, so an id pasted into the fetch form
+    # is often only in temp_view_claims; the downloader has always fallen back
+    # this way, and the metadata lookups now match it.
+    CLAIM_LOOKUP_TABLES = [
+        table.strip() for table in os.environ.get(
+            "CLAIM_LOOKUP_TABLES",
+            "dmart_solution.claim_paid_t,public.temp_view_claims,"
+            "dmart_solution.claim_paid_excel_t_08072026",
+        ).split(",") if table.strip()
+    ]
     CLAIM_TARGET_SCHEMA = os.environ.get("CLAIM_TARGET_SCHEMA", "public")
     S3_SOURCE_BUCKET = os.environ.get("S3_SOURCE_BUCKET", "mumpmjprodpmjayapp")
 
@@ -139,6 +162,17 @@ class Config:
     FETCH_LOAD_REDSHIFT_DEFAULT = _env(
         "FETCH_LOAD_REDSHIFT_DEFAULT", default="1"
     ).strip().lower() not in {"0", "false", "no", "off"}
+
+    # --- Textract features (Advanced settings) ---------------------------
+    # FORMS + LAYOUT are always requested. TABLES is on by default because the
+    # claim summary reads tables as its first tier and search indexes table
+    # cells. SIGNATURES and QUERIES cost extra per page and are opt-in.
+    ENABLE_TEXTRACT_TABLES = True
+    ENABLE_TEXTRACT_SIGNATURES = False
+    ENABLE_TEXTRACT_QUERIES = False
+    # Custom queries, one per line as "Alias: question text". Empty means use
+    # DEFAULT_QUERIES below. Only sent when ENABLE_TEXTRACT_QUERIES is on.
+    TEXTRACT_QUERIES = ""
 
     DEFAULT_QUERIES = [
         {"Text": "What is the patient name?", "Alias": "Name"},
