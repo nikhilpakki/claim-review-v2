@@ -38,7 +38,12 @@ from .db import get_db
 #    to claim_summary.parse_date_text (ISO dates were being read day-first).
 #    Neither changes the rules table, so nothing else in the key would have
 #    noticed, and already-cached claims would have kept the old outcomes.
-ROLLUP_VERSION = 2
+#
+# 3: rule procedure-code scoping now splits the claim's pipe-delimited
+#    procedure_code list instead of comparing the whole string, so rules scoped
+#    to a code start applying to multi-code claims they used to skip. The rules
+#    table is unchanged, so this is the only input that notices.
+ROLLUP_VERSION = 3
 
 
 def _digest(*parts):

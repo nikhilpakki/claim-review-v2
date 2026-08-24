@@ -123,25 +123,65 @@ def set_rule_enabled(rule_id, enabled):
 
 # --------------------------------------------------------------- helpers
 
+# procedure_code holds a claim's whole procedure list in one pipe-delimited
+# string ('SO057A|SO064A'), not a single code - 9,330 of 22,018 warehouse rows
+# carry a pipe, as do 11 of the 125 claims in the live dataset. Comparing the
+# whole string for equality therefore never matched a multi-code claim, so a
+# rule scoped to SO057A silently skipped every claim that had anything else on
+# it alongside.
+PROCEDURE_LIST_SEPARATOR = "|"
+
+
+def _claim_procedure_codes(value):
+    """A claim's procedure codes: split, trimmed, de-duplicated, order kept.
+
+    Items repeat in this data ('MG062A|MG062A' - one entry per procedure
+    performed, joined verbatim), and collapsing them keeps the "isn't in this
+    rule's list" message readable.
+    """
+    if not isinstance(value, str):
+        value = str(value) if value else ""
+    seen, codes = set(), []
+    for item in value.split(PROCEDURE_LIST_SEPARATOR):
+        item = item.strip()
+        if item and item.lower() not in seen:
+            seen.add(item.lower())
+            codes.append(item)
+    return codes
+
+
 def _procedure_codes_match(claim_id, config, user_id=None):
     """Whether `rule` (via its config's procedure_codes list) applies to this
-    claim. ["All"] (the default, case-insensitive) always matches; otherwise
-    the claim's CSV 'procedure_code' column must be one of the configured
-    codes. Returns (applies: bool, reason_if_not: str|None)."""
+    claim. ["All"] (the default, case-insensitive) always matches; otherwise at
+    least one of the claim's own procedure codes must be in the configured
+    list. Returns (applies: bool, reason_if_not: str|None).
+
+    Each code is matched exactly, deliberately unlike the fetch-side filter
+    (fetch/queries.py procedure_group_pattern), which is plain containment so a
+    typed prefix catches a whole family. The difference is the input, not an
+    oversight: that filter is a free-text box where a reviewer means the family
+    they typed, while this is a fixed picklist of complete codes
+    (data/procedure_codes.json, 23 of them, all fully suffixed). Containment
+    here would silently widen the choice made in the dropdown - picking
+    'MG072C' would also pull in 'MG072CGA', a different procedure that really
+    does occur in the warehouse.
+    """
     codes = config.get("procedure_codes") or ["All"]
     if any(str(c).strip().lower() == "all" for c in codes):
         return True, None
 
     row = csv_data.get_claim_row(claim_id, user_id)
-    claim_code = (row or {}).get("procedure_code")
-    claim_code = claim_code.strip() if isinstance(claim_code, str) else (str(claim_code).strip() if claim_code else "")
-    if not claim_code:
+    claim_codes = _claim_procedure_codes((row or {}).get("procedure_code"))
+    if not claim_codes:
         return False, "no 'procedure_code' value in the CSV for this claim"
 
-    normalized = {str(c).strip().lower() for c in codes}
-    if claim_code.lower() in normalized:
+    configured = {str(c).strip().lower() for c in codes}
+    if any(code.lower() in configured for code in claim_codes):
         return True, None
-    return False, f"claim's procedure code '{claim_code}' isn't in this rule's configured list"
+    listed = ", ".join(claim_codes)
+    if len(claim_codes) == 1:
+        return False, f"claim's procedure code {listed} isn't in this rule's configured list"
+    return False, f"claim's procedure codes {listed} aren't in this rule's configured list"
 
 
 def _parse_date(value):
