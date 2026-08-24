@@ -86,11 +86,39 @@ def values_match(a, b, fuzzy_threshold=None, soundex_threshold=None):
     return False, None, 0.0
 
 
+# A section with a heading and no body under it - the heading still has to be
+# findable, and a key with no values is never iterated, so the heading stands
+# in as its own value.
+SECTION_KEY_FALLBACK = "Section text"
+
+
+def _section_kv_pairs(page):
+    """(key, value) pairs for one page's LAYOUT sections.
+
+    Sections are where the narrative lives - a discharge summary is prose under
+    a heading, so FORMS produces no key/value pair for it and TABLES sees
+    nothing. Searching only forms/queries/tables therefore missed every word of
+    it, which is what this repairs.
+
+    The heading becomes the key, so searching for a heading finds the section;
+    each line of the body becomes its own value, so a hit can be shown as a
+    readable snippet instead of a whole page of prose (and so the fuzzy stage
+    scores a query against one line rather than against thousands of
+    characters, where token_set_ratio stops discriminating).
+    """
+    for section in page.get("sections", []):
+        title = (section.get("title") or "").strip()
+        key = title or SECTION_KEY_FALLBACK
+        lines = [line.strip() for line in (section.get("text") or "").splitlines() if line.strip()]
+        for line in lines or ([title] if title else []):
+            yield key, line
+
+
 def page_kv_dict(page):
     """{key: [values]} for a single cached page's forms + query answers +
-    table cells - the same extraction documents_from_docs() does per page,
-    factored out so a single page can be searched on its own (e.g. the
-    'gps photo' keyword check in classify.py)."""
+    table cells + LAYOUT section text - the same extraction
+    documents_from_docs() does per page, factored out so a single page can be
+    searched on its own (e.g. the 'gps photo' keyword check in classify.py)."""
     kvs = {}
     for form in page.get("forms", []):
         kvs.setdefault(form["key"], []).append(form["value"])
@@ -111,19 +139,22 @@ def page_kv_dict(page):
                 header_cell = header[col_idx].strip() if col_idx < len(header) else ""
                 key = header_cell or f"Table column {col_idx + 1}"
                 kvs.setdefault(key, []).append(cell)
+    for key, value in _section_kv_pairs(page):
+        kvs.setdefault(key, []).append(value)
     return kvs
 
 
 def documents_from_docs(docs, page_filter=None):
     """{rel_path: {key: [values]}} built from an already-scanned doc list
     (claim_scanner.scan_claim_cached - each doc already carries its
-    cached_result, no re-hashing/re-reading here). Pulls from all three
-    Textract result types - form KV pairs, QUERY answers, and TABLE cells -
-    so search/rules see everything, not just forms. Also returns per-hit
-    location metadata (page_number, key_bbox, value_bbox, image_rel) keyed
-    by (rel_path, key, value) so search results can carry a jump-to target;
-    queries and table cells have no bbox from Textract today, so they get a
-    page-level jump target with no highlight box.
+    cached_result, no re-hashing/re-reading here). Pulls from all four
+    Textract result types - form KV pairs, QUERY answers, TABLE cells, and
+    LAYOUT section headings and text - so search/rules see everything, not
+    just forms. Also returns per-hit location metadata (page_number, key_bbox,
+    value_bbox, image_rel) keyed by (rel_path, key, value) so search results
+    can carry a jump-to target; queries, table cells and sections have no bbox
+    from Textract today, so they get a page-level jump target with no
+    highlight box.
 
     `page_filter(page) -> bool`, if given, restricts which pages contribute
     (e.g. a rule scoped to only 'document'-tagged pages) - a document with
@@ -179,6 +210,11 @@ def documents_from_docs(docs, page_filter=None):
                         locations.setdefault((doc["rel_path"], key, cell), {
                             **loc_base, "key_bbox": None, "value_bbox": None,
                         })
+            for key, value in _section_kv_pairs(page):
+                kvs.setdefault(key, []).append(value)
+                locations.setdefault((doc["rel_path"], key, value), {
+                    **loc_base, "key_bbox": None, "value_bbox": None,
+                })
         if page_filter is not None and not doc_has_scoped_page:
             continue
         documents[doc["rel_path"]] = kvs
