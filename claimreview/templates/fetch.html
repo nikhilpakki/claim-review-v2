@@ -98,8 +98,9 @@
         <br><code>MG110|ABC23</code> &mdash; claims with <strong>either</strong> code (alternatives)
         <br><code>MG110,ABC23</code> &mdash; claims with <strong>both</strong> codes (all required)
         <br><code>MG110|ABC23,LB001</code> &mdash; (MG110 or ABC23) <strong>and</strong> LB001
-        <br>Each code must match a whole item in that list, so <code>LB05</code> will not match
-        <code>LB055</code>; write <code>LB.*</code> if you do want a prefix. Empty = no filter.
+        <br>Each code is a case-insensitive regex matched anywhere in that list, so a prefix
+        catches its whole family &mdash; <code>MG110</code> finds <code>MG110MLB</code>. To require
+        an exact item instead, write <code>(^|[|])MG110([|]|$)</code>. Empty = no filter.
       </p>
     </div>
 

@@ -59,9 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="CODES",
         help="Only include claims whose procedure_code list contains these. "
         "Pipe = alternatives, comma = all required: 'A|B' means A or B, 'A,B' "
-        "means A and B, 'A|B,C' means (A or B) and C. Each code is matched as a "
-        "complete item in the claim's pipe-delimited procedure list, and is "
-        "still a case-insensitive regex ('LB.*' for a prefix). "
+        "means A and B, 'A|B,C' means (A or B) and C. Each code is a "
+        "case-insensitive regex tested against the whole procedure list, so a "
+        "prefix matches its whole family ('MG110' finds 'MG110MLB'); use "
+        "'(^|[|])MG110([|]|$)' to require an exact item. "
         "Default: no procedure-code filter.",
     )
     parser.add_argument(

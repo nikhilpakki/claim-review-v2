@@ -100,6 +100,10 @@ def _table(source_table: str) -> sql.Identifier:
 #   "a|b,c"    -> (contains a OR b) AND contains c
 # Comma never appears in the data (0 of 22,018 rows), so it is unambiguous as
 # the AND separator.
+#
+# "Contains" is literal: each term is a case-insensitive regex tested against
+# the whole list, so a code prefix matches every code in its family. See
+# procedure_group_pattern.
 PROCEDURE_AND_SEPARATOR = ","
 PROCEDURE_OR_SEPARATOR = "|"
 
@@ -153,16 +157,25 @@ def parse_procedure_filter(value: str | None) -> list[list[str]]:
     return groups
 
 
-def procedure_group_pattern(alternatives: list[str]) -> str:
-    """Regex matching any of `alternatives` as a *complete* item in the
-    pipe-delimited list.
+# Whole-item matching, kept as a documented pattern rather than the default:
+# paste "(^|[|])MG110([|]|$)" into the filter box when one exact code - and not
+# its family - is what is wanted. Written with a character class because a
+# backslash escape only survives as a bound parameter, not in inlined SQL.
+WHOLE_ITEM_PATTERN = r"(^|[|]){}([|]|$)"
 
-    Anchoring on the delimiters is what stops 'LB05' from also matching
-    'LB055': the column is a list, so a bare substring test asks the wrong
-    question. Each alternative is still a regex, so 'LB.*' remains available
-    when prefix matching is what you actually want.
+
+def procedure_group_pattern(alternatives: list[str]) -> str:
+    """Regex matching any of `alternatives` anywhere in the procedure list.
+
+    A plain containment test, so 'MG110' also finds 'MG110MLB' - which is the
+    point: the codes carry suffixes ('MG002A', 'SN059CGA', 'MG110MLB'), and a
+    reviewer filtering on 'MG110' means that family, not one exact string.
+    Anchoring on the delimiters, which this used to do, turned every prefix
+    into a silent zero-row filter: 'MG110' matched 0 of the 4 claims carrying
+    MG110MLB. Each alternative is still a regex, so WHOLE_ITEM_PATTERN remains
+    available when exact-item matching really is what is wanted.
     """
-    return r"(^|\|)(" + "|".join(alternatives) + r")(\||$)"
+    return PROCEDURE_OR_SEPARATOR.join(alternatives)
 
 
 def describe_procedure_filter(groups: list[list[str]]) -> str:
