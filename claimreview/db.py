@@ -162,6 +162,43 @@ CREATE TABLE IF NOT EXISTS user_state (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A hypothesis is the question a review campaign is trying to answer: the
+-- claim population it concerns, and how many of those have to be reviewed for
+-- the answer to mean anything.
+--
+-- claim_count and sample_size are frozen at the moment "Process" was pressed,
+-- not recomputed on read. They have to be: the warehouse tables this counts
+-- are live (today's table grew from 13,069 to 30,571 rows in the course of one
+-- afternoon), so a denominator recomputed on every page load would make
+-- progress appear to move backwards without anybody reviewing anything.
+CREATE TABLE IF NOT EXISTS hypotheses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT,
+  procedure_codes TEXT,
+  exclude_procedure_codes TEXT,
+  include_non_pmjay INTEGER NOT NULL DEFAULT 1,
+  period_kind TEXT NOT NULL DEFAULT '3M',
+  period_from TEXT,
+  period_to TEXT,
+  confidence_level INTEGER NOT NULL DEFAULT 95,
+  margin_of_error REAL NOT NULL DEFAULT 0.05,
+  -- Frozen KPIs, NULL until first processed. A hypothesis cannot be used in a
+  -- fetch until these exist, because the sample size comes from them.
+  claim_count INTEGER,
+  sample_size INTEGER,
+  processed_at TEXT,
+  processed_window_from TEXT,
+  processed_window_to TEXT,
+  -- Set when the criteria change after processing: the KPIs still describe the
+  -- old criteria, so the UI marks them stale rather than quietly misreporting.
+  criteria_changed_at TEXT,
+  created_by_user_id INTEGER,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT
+);
+
 -- rule_type deliberately carries no CHECK constraint: the valid set is
 -- rules_engine.RULE_TYPES, which grows as rule types are added, and both
 -- create_rule() and update_rule() reject anything outside it. A CHECK here
@@ -202,6 +239,11 @@ _MIGRATED_COLUMNS = {
         # user needs to know whose run is in the way.
         "started_by_user_id": "INTEGER",
         "started_by": "TEXT",
+        # Which hypothesis the run was made under, NULL for an ordinary fetch.
+        # This is the whole linkage: fetch_run_claims already maps a run to its
+        # claims, so a hypothesis's claims are the claims of its runs and no
+        # claim has to be re-matched against the criteria afterwards.
+        "hypothesis_id": "INTEGER",
     },
     # Rules predating this column were created when only an admin could make
     # one, so leaving them NULL is accurate: they belong to no individual and
@@ -210,6 +252,12 @@ _MIGRATED_COLUMNS = {
         "created_by_user_id": "INTEGER",
         "created_by": "TEXT",
     },
+    # Who recorded a review decision. The reviewer name used to be typed into
+    # the form, which is no basis for counting anybody's progress.
+    "reviews": {"reviewer_user_id": "INTEGER"},
+    # Permission to create, edit and delete hypotheses, granted by an admin.
+    # Admins always have it regardless of this column.
+    "users": {"can_manage_hypotheses": "INTEGER NOT NULL DEFAULT 0"},
 }
 
 

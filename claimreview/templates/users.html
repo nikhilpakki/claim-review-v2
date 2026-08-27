@@ -17,12 +17,24 @@
     <div class="fetch-history-row">
       <span><strong>{{ user.display_name }}</strong> <span class="mono">({{ user.username }})</span></span>
       {% if user.is_admin %}<span class="tag tag-document">administrator</span>{% endif %}
+      {#- Only worth showing for non-admins: an admin manages hypotheses anyway. -#}
+      {% if user.can_manage_hypotheses and not user.is_admin %}
+      <span class="tag tag-photo">manages hypotheses</span>
+      {% endif %}
       {% if not user.is_active %}<span class="tag tag-nodata">deactivated</span>{% endif %}
       <form method="post" style="display:inline;">
         <input type="hidden" name="user_id" value="{{ user.id }}">
         <input type="hidden" name="action" value="toggle_admin">
         <button type="submit" class="btn-secondary">{{ 'Revoke admin' if user.is_admin else 'Make admin' }}</button>
       </form>
+      {% if not user.is_admin %}
+      <form method="post" style="display:inline;">
+        <input type="hidden" name="user_id" value="{{ user.id }}">
+        <input type="hidden" name="action" value="toggle_hypotheses">
+        <button type="submit" class="btn-secondary">
+          {{ 'Revoke hypotheses' if user.can_manage_hypotheses else 'Allow hypotheses' }}</button>
+      </form>
+      {% endif %}
       <form method="post" style="display:inline;">
         <input type="hidden" name="user_id" value="{{ user.id }}">
         <input type="hidden" name="action" value="toggle_active">

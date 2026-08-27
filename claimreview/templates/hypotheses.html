@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Hypotheses - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<h1>Hypotheses</h1>
+<p class="hint">
+  A hypothesis is the question a round of reviewing is meant to answer: which claims it concerns,
+  and how many of them have to be reviewed for the answer to hold up. Processing one counts the
+  matching claims in the warehouse and derives a sample size from them. Fetch claims under a
+  hypothesis to have those reviews count towards it.
+  {% if not can_manage %}
+  <br>Everyone can see hypotheses and review against them; creating and editing them is limited to
+  administrators and reviewers who have been granted it.
+  {% endif %}
+</p>
+
+{% if error %}<p class="error-banner">{{ error }}</p>{% endif %}
+
+{% if can_manage %}
+{% include "partials/hypothesis_form.html" %}
+{% endif %}
+{% include "partials/hypothesis_list.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  // Custom date inputs are only meaningful for the custom period.
+  const kind = document.getElementById('period_kind');
+  const custom = document.querySelector('.period-custom-fields');
+  function syncPeriod() {
+    if (custom) custom.style.display = kind && kind.value === 'CUSTOM' ? '' : 'none';
+  }
+  if (kind) { kind.addEventListener('change', syncPeriod); syncPeriod(); }
+
+  // Processing hits the warehouse and takes a couple of seconds; say so rather
+  // than leaving the button looking ignored.
+  document.querySelectorAll('form.process-form').forEach((form) => {
+    form.addEventListener('submit', () => {
+      const btn = form.querySelector('button');
+      if (btn) { btn.disabled = true; btn.textContent = 'Counting claims...'; }
+    });
+  });
+
+  document.querySelectorAll('form[data-confirm]').forEach((form) => {
+    form.addEventListener('submit', (e) => {
+      if (!window.confirm(form.dataset.confirm)) e.preventDefault();
+    });
+  });
+})();
+</script>
+{% endblock %}

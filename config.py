@@ -37,7 +37,6 @@ class Config:
     TEXTRACT_CACHE_DIR = os.path.join(CACHE_DIR, "textract")
     PAGES_CACHE_DIR = os.path.join(CACHE_DIR, "pages")
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(16)
-    REVIEWER_NAME = os.environ.get("REVIEWER_NAME", "")
 
     SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg"}
 
@@ -147,6 +146,36 @@ class Config:
             "dmart_solution.claim_paid_excel_t_08072026",
         ).split(",") if table.strip()
     ]
+    # A hypothesis counts claims over a date range that no single table covers.
+    # Each of these owns a window of claim_init_date, and only its own window is
+    # read, so nothing is counted twice:
+    #
+    #   historical  claim_init_date <  HISTORICAL_CUTOVER   (26.4M rows,
+    #                                                        2023-12 .. 2026-07-08)
+    #   recent      CUTOVER <= claim_init_date < today      (2.1M rows, fed
+    #                                                        every ~5 minutes)
+    #   today       claim_init_date >= today                (today only, reset
+    #                                                        daily)
+    #
+    # The cutover is a property of the data, not of the code - the historical
+    # table is a one-off extract that stops at 2026-07-08 - so it is settable
+    # without a code change when the next extract lands. Measured at the
+    # boundary: 39,597 registration_ids exist in both the historical and recent
+    # tables on the cutover day itself, which is why the count de-duplicates.
+    HYPOTHESIS_HISTORICAL_TABLE = os.environ.get(
+        "HYPOTHESIS_HISTORICAL_TABLE", "dmart_solution.claim_paid_excel_t_08072026")
+    HYPOTHESIS_RECENT_TABLE = os.environ.get(
+        "HYPOTHESIS_RECENT_TABLE", "public.temp_view_claims")
+    HYPOTHESIS_TODAY_TABLE = os.environ.get(
+        "HYPOTHESIS_TODAY_TABLE", "dmart_solution.claim_paid_t")
+    HYPOTHESIS_HISTORICAL_CUTOVER = os.environ.get(
+        "HYPOTHESIS_HISTORICAL_CUTOVER", "2026-07-08")
+    # claim_init_date is a timestamp, and every window bound is a date. An
+    # inclusive upper bound therefore truncates to midnight and silently drops
+    # a whole day: "BETWEEN '2026-08-26' AND '2026-08-26'" returns 0 rows where
+    # the correct half-open range returns 46,684. Windows are always [from, to).
+    HYPOTHESIS_PERIOD_COLUMN = os.environ.get("HYPOTHESIS_PERIOD_COLUMN", "claim_init_date")
+
     CLAIM_TARGET_SCHEMA = os.environ.get("CLAIM_TARGET_SCHEMA", "public")
     S3_SOURCE_BUCKET = os.environ.get("S3_SOURCE_BUCKET", "mumpmjprodpmjayapp")
 

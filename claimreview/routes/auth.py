@@ -103,6 +103,19 @@ def save_user():
             else:
                 users.set_admin(user_id, not (target and target["is_admin"]))
                 message = "Administrator rights updated."
+        elif action == "toggle_hypotheses":
+            # Admins already manage hypotheses by virtue of being admins, so
+            # the flag would not change anything for them - the UI does not
+            # offer it, and this refuses it rather than storing a value that
+            # has no effect.
+            user_id = int(request.form["user_id"])
+            target = users.get_user(user_id)
+            if target and target["is_admin"]:
+                error = "Administrators already manage hypotheses."
+            else:
+                users.set_can_manage_hypotheses(
+                    user_id, not (target and target["can_manage_hypotheses"]))
+                message = "Hypothesis permissions updated."
         elif action == "toggle_active":
             user_id = int(request.form["user_id"])
             target = users.get_user(user_id)

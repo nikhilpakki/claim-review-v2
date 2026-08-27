@@ -48,7 +48,18 @@ def _row_to_user(row):
         "display_name": row["display_name"] or row["username"],
         "is_admin": bool(row["is_admin"]),
         "is_active": bool(row["is_active"]),
+        # Admins always manage hypotheses; the column marks the reviewers who
+        # have additionally been granted it.
+        "can_manage_hypotheses": bool(row["is_admin"] or _column(row, "can_manage_hypotheses")),
     }
+
+
+def _column(row, name, default=None):
+    """A column that may not exist yet on an old row object."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return default
 
 
 def count_users():
@@ -96,6 +107,19 @@ def set_password(user_id, password):
     db = get_db()
     db.execute("UPDATE users SET password_hash=? WHERE id=?",
                (generate_password_hash(password), user_id))
+    db.commit()
+
+
+def set_can_manage_hypotheses(user_id, allowed):
+    """Grant or revoke hypothesis management for one reviewer.
+
+    Has no effect on an admin, who manages hypotheses by virtue of being an
+    admin - revoking the flag would not take the ability away, so the UI does
+    not offer it for them.
+    """
+    db = get_db()
+    db.execute("UPDATE users SET can_manage_hypotheses=? WHERE id=?",
+               (1 if allowed else 0, user_id))
     db.commit()
 
 

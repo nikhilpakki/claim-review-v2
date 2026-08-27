@@ -1,0 +1,62 @@
+<h2 style="margin-top:2rem; font-size:1.1rem;">Hypotheses ({{ hypotheses|length }})</h2>
+<ul class="doc-list" id="hypothesis-list">
+  {% for h in hypotheses %}
+  <li>
+    <span class="doc-text">
+      <span class="doc-file-name">{{ h.title }}</span>
+      {% if h.description %}<span class="doc-dir-path">{{ h.description }}</span>{% endif %}
+      <span class="doc-dir-path">
+        {{ h.period_description }}
+        &middot; {{ 'all schemes' if h.include_non_pmjay else 'PMJAY only' }}
+        &middot; codes: {{ h.procedure_codes or 'any' }}
+        {%- if h.exclude_procedure_codes %} &middot; excluding: {{ h.exclude_procedure_codes }}{% endif %}
+        &middot; {{ h.confidence_level }}% / {{ h.margin_of_error }}
+        {%- if h.created_by %} &middot; by {{ h.created_by }}{% endif %}
+      </span>
+      <span class="doc-dir-path">
+        {% if h.is_processed %}
+          {#- The window is spelled out because "last 3 months" resolves
+              differently tomorrow, so the frozen numbers need their dates. -#}
+          <strong>{{ '{:,}'.format(h.claim_count) }}</strong> claims matched
+          &middot; sample <strong>{{ h.sample_size }}</strong>
+          &middot; reviewed <strong>{{ h.claims_reviewed }}</strong> of {{ h.sample_size }}
+          ({{ h.progress_pct }}%{% if h.reviews_remaining %}, {{ h.reviews_remaining }} to go{% endif %})
+          &middot; {{ h.claims_fetched }} fetched in {{ h.run_count }} run{{ '' if h.run_count == 1 else 's' }}
+          <br>counted {{ h.processed_at }} over
+          {{ h.processed_window_from }} to {{ h.processed_window_to }} (exclusive)
+        {% else %}
+          Not processed yet &mdash; no claim count or sample size, and it cannot be selected on the
+          Fetch page until it has one.
+        {% endif %}
+      </span>
+    </span>
+    <span class="doc-tags">
+      {% if h.is_stale %}
+      <span class="badge status-failed" title="The criteria changed after these numbers were counted">counts stale</span>
+      {% elif h.is_processed %}
+      <span class="badge status-completed">processed</span>
+      {% else %}
+      <span class="badge status-not_started">not processed</span>
+      {% endif %}
+      {% if can_manage %}
+      <form method="post" action="{{ url_for('hypothesis.process_hypothesis', hypothesis_id=h.id) }}"
+            style="display:inline;" class="process-form">
+        <button type="submit" class="btn-secondary">{{ 'Process again' if h.is_processed else 'Process' }}</button>
+      </form>
+      <a class="btn btn-secondary" href="{{ url_for('hypothesis.edit_hypothesis_form', hypothesis_id=h.id) }}"
+         style="text-decoration:none; display:inline-block;">Edit</a>
+      <form method="post" action="{{ url_for('hypothesis.delete_hypothesis', hypothesis_id=h.id) }}"
+            style="display:inline;"
+            data-confirm="Delete '{{ h.title }}'? Fetch runs made under it are kept, but stop counting towards anything.">
+        <button type="submit" class="btn-secondary">Delete</button>
+      </form>
+      {% endif %}
+    </span>
+  </li>
+  {% else %}
+  <li class="empty">
+    No hypotheses yet.
+    {%- if can_manage %} Create one above.{% endif %}
+  </li>
+  {% endfor %}
+</ul>

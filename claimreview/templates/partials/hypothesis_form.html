@@ -1,0 +1,115 @@
+{% set h = edit_hypothesis %}
+<form method="post"
+      action="{{ url_for('hypothesis.update_hypothesis', hypothesis_id=h.id) if h else url_for('hypothesis.create_hypothesis') }}">
+  <fieldset class="settings-group">
+    <legend>{{ 'Edit hypothesis' if h else 'New hypothesis' }}</legend>
+
+    <div class="settings-field">
+      <label for="field-title">Title</label>
+      <input type="text" id="field-title" name="title" required maxlength="200"
+             value="{{ h.title if h else '' }}"
+             placeholder="e.g. Cataract day-care billed as inpatient">
+    </div>
+
+    <div class="settings-field">
+      <label for="field-description">Description</label>
+      <textarea id="field-description" name="description" rows="3"
+                placeholder="What is being tested, and why?">{{ h.description or '' if h else '' }}</textarea>
+      <p class="settings-help">Optional. What the team is trying to establish.</p>
+    </div>
+
+    <div class="settings-field">
+      <label for="field-procedure-codes">Procedure codes to include</label>
+      <input type="text" id="field-procedure-codes" name="procedure_codes"
+             value="{{ h.procedure_codes or '' if h else '' }}"
+             placeholder="e.g. MG110|ABC23  or  MG110,ABC23">
+      <p class="settings-help">
+        Optional, and the same syntax as Fetch claims:
+        <br><code>A|B</code> &mdash; claims with <strong>either</strong> code
+        <br><code>A,B</code> &mdash; claims with <strong>both</strong>
+        <br>Each code is a case-insensitive regex matched anywhere in the claim's procedure list, so
+        a prefix catches its family. Empty means every procedure code.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label for="field-exclude-procedure-codes">Procedure codes to exclude</label>
+      <input type="text" id="field-exclude-procedure-codes" name="exclude_procedure_codes"
+             value="{{ h.exclude_procedure_codes or '' if h else '' }}"
+             placeholder="e.g. lm100|xy999">
+      <p class="settings-help">
+        Same syntax, applied as a rejection. Empty excludes nothing.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="include_non_pmjay"
+               {{ 'checked' if (h.include_non_pmjay if h else True) }}>
+        <span>Include non-PMJAY schemes</span>
+      </label>
+      <p class="settings-help">
+        On by default, so a hypothesis covers the whole population unless you narrow it. Unticking
+        restricts to <code>policy_code LIKE 'PMJAY%'</code>.
+        {#- Worth stating: the fetch form's equivalent starts off, so the two defaults differ. -#}
+        Note this is the opposite of the Fetch page's default, which starts PMJAY-only.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label for="period_kind">Time period</label>
+      <select id="period_kind" name="period_kind">
+        {% for kind, label in period_choices %}
+        <option value="{{ kind }}"
+                {{ 'selected' if (h.period_kind if h else default_period) == kind }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="settings-help">
+        Required. Filters on <code>claim_init_date</code>, counted back from today. Periods include
+        the whole of today and the whole of the start day.
+      </p>
+    </div>
+
+    <div class="settings-field period-custom-fields">
+      <label for="field-period-from">Custom range</label>
+      <input type="date" id="field-period-from" name="period_from"
+             value="{{ h.period_from or '' if h else '' }}">
+      <input type="date" id="field-period-to" name="period_to"
+             value="{{ h.period_to or '' if h else '' }}">
+      <p class="settings-help">Both dates are included.</p>
+    </div>
+
+    <div class="settings-field">
+      <label for="field-confidence">Confidence level and margin of error</label>
+      <select id="field-confidence" name="confidence_level">
+        {% for level in confidence_levels %}
+        <option value="{{ level }}"
+                {{ 'selected' if (h.confidence_level if h else default_confidence) == level }}>{{ level }}%</option>
+        {% endfor %}
+      </select>
+      <input type="number" name="margin_of_error" step="0.01" min="0.01" max="0.99"
+             value="{{ h.margin_of_error if h else default_margin }}">
+      <p class="settings-help">
+        These set the sample size, using Cochran's formula with a finite-population correction at the
+        most conservative response split. At 95% and 0.05 that is 385 reviews for any population above
+        about a hundred thousand, and fewer for small ones.
+      </p>
+    </div>
+
+    <div class="settings-actions">
+      <button type="submit">{{ 'Save changes' if h else 'Create hypothesis' }}</button>
+      {% if h %}
+      <a class="btn btn-secondary" href="{{ url_for('hypothesis.view_hypotheses') }}"
+         style="text-decoration:none; display:inline-block;">Cancel</a>
+      {% endif %}
+    </div>
+    <p class="settings-help">
+      {% if h %}
+      Changing the codes, schemes, period or confidence marks the counts stale until you process again.
+      Editing only the title or description leaves them alone.
+      {% else %}
+      Create it first, then press Process to count the claims and derive the sample size.
+      {% endif %}
+    </p>
+  </fieldset>
+</form>
