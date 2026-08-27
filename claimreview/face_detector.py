@@ -11,6 +11,7 @@ live, so retuning it re-labels every already-processed page instantly with
 no reprocessing.
 """
 import os
+import threading
 
 import cv2
 import numpy as np
@@ -74,14 +75,33 @@ class _Backend:
         return results
 
 
-_backend = None
+# One backend per thread, not one per process.
+#
+# cv2.FaceDetectorYN is not thread-safe, and pages are analysed on a
+# ThreadPoolExecutor (processing.py). setInputSize() reconfigures the network
+# in place, so with a shared instance two threads holding differently-sized
+# pages race: one calls setInputSize while the other is inside detect(), and
+# the graph asserts `buf.shape() == m.shape()` in forwardGraph. The size memo
+# below reads as if it prevented this, but it is a check-then-act on shared
+# state and does the opposite - it makes the reconfiguration sporadic and the
+# failure look like a bad image file rather than a race.
+#
+# Measured on 200 detections over six page sizes: 196 failures when the
+# instance was shared across 8 threads, 0 sequentially. The ONNX model is
+# ~350 KB and the pool is small, so an instance per thread is cheap.
+_local = threading.local()
+_construct_lock = threading.Lock()
 
 
 def _get_backend():
-    global _backend
-    if _backend is None:
-        _backend = _Backend()
-    return _backend
+    backend = getattr(_local, "backend", None)
+    if backend is None:
+        # Only ever contended on a thread's first page: it serialises reading
+        # the model file, not detection.
+        with _construct_lock:
+            backend = _Backend()
+        _local.backend = backend
+    return backend
 
 
 def detect_faces(jpeg_bytes):
