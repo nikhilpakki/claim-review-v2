@@ -15,7 +15,7 @@ import io
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
@@ -476,6 +476,143 @@ def fetch_claim_rows(
 
 
 # --------------------------------------------------------------- CLI parsing
+
+
+# ------------------------------------------------- hypothesis claim selection
+
+# A hypothesis names a date range that no single table covers, so each table is
+# given the slice of the range it actually holds. See the config block for the
+# measured shape of the three tables.
+#
+# The slices deliberately overlap by one day at the historical cutover: the
+# historical extract and the recent feed disagree there (43,400 ids vs 76,379
+# on the cutover day, 39,597 of them shared), so taking the day from both and
+# de-duplicating on registration_id is the only way to lose neither side. It
+# costs nothing measurable - 2.1s either way for a 3-month count - and recovers
+# 3,803 claims a hard cutoff would drop.
+
+
+def warehouse_today(connection: psycopg.Connection[Any]) -> date:
+    """The warehouse's own current_date.
+
+    Periods have to be resolved against the machine holding the data, not the
+    one running the web server: if the two clocks disagree about what day it
+    is, "today" would select the wrong window and nothing would say so.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_date")
+        value = cursor.fetchone()[0]
+    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+
+
+def hypothesis_windows(period_from: date, period_to: date, today: date,
+                       config: Mapping[str, Any] | None = None) -> list[tuple[str, date, date]]:
+    """[(table, window_from, window_to), ...] covering [period_from, period_to).
+
+    Windows are half-open and a table with an empty window is left out
+    entirely, so selecting "Yesterday" reads only the recent feed and "Today"
+    reads only today's table.
+    """
+    config = config or {}
+    historical = config.get("HYPOTHESIS_HISTORICAL_TABLE", "dmart_solution.claim_paid_excel_t_08072026")
+    recent = config.get("HYPOTHESIS_RECENT_TABLE", "public.temp_view_claims")
+    current = config.get("HYPOTHESIS_TODAY_TABLE", "dmart_solution.claim_paid_t")
+    cutover_text = config.get("HYPOTHESIS_HISTORICAL_CUTOVER", "2026-07-08")
+    cutover = cutover_text if isinstance(cutover_text, date) else date.fromisoformat(str(cutover_text)[:10])
+
+    candidates = [
+        # The cutover day itself is read from both sides - see above.
+        (historical, period_from, min(period_to, cutover + timedelta(days=1))),
+        (recent, max(period_from, cutover), min(period_to, today)),
+        (current, max(period_from, today), period_to),
+    ]
+    return [(table, lo, hi) for table, lo, hi in candidates if lo < hi]
+
+
+def window_bound(value: Any) -> str:
+    """A window bound as an ISO date string.
+
+    Accepts a date or a string so a resolved window survives a round trip
+    through a run's stored parameters without the caller converting it back.
+    """
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)[:10]
+
+
+def _hypothesis_union(windows: list[tuple[str, Any, Any]], filters: "ClaimFilters | None",
+                      period_column: str, select_payload: bool) -> tuple[Any, list[Any]]:
+    """The UNION ALL over each table's window, and its bound parameters."""
+    filter_clause, filter_params = claim_filter_clause(filters)
+    columns = (sql.SQL("registration_id, json_object_perauth") if select_payload
+               else sql.SQL("registration_id"))
+    parts, params = [], []
+    for table, lo, hi in windows:
+        parts.append(sql.SQL("""
+            SELECT {columns}
+            FROM {table}
+            WHERE registration_id IS NOT NULL
+              AND json_object_perauth IS NOT NULL
+              AND json_object_perauth <> ''
+              AND {period} >= %s
+              AND {period} < %s{filters}
+        """).format(columns=columns, table=_table(table),
+                    period=sql.Identifier(period_column), filters=filter_clause))
+        # The window bounds bind before the filter's own parameters, matching
+        # the order the placeholders appear in.
+        params.extend([window_bound(lo), window_bound(hi), *filter_params])
+    return sql.SQL(" UNION ALL ").join(parts), params
+
+
+def count_hypothesis_claims(connection: psycopg.Connection[Any],
+                            windows: list[tuple[str, date, date]],
+                            filters: "ClaimFilters | None" = None,
+                            period_column: str = "claim_init_date") -> int:
+    """Distinct claims matching a hypothesis across its windows.
+
+    COUNT(DISTINCT ...) rather than COUNT(*) because the cutover day is read
+    from two tables on purpose.
+    """
+    if not windows:
+        return 0
+    union, params = _hypothesis_union(windows, filters, period_column, select_payload=False)
+    query = sql.SQL("SELECT COUNT(DISTINCT registration_id) FROM ({}) u").format(union)
+    with connection.cursor() as cursor:
+        cursor.execute(query, tuple(params))
+        return int(cursor.fetchone()[0] or 0)
+
+
+def fetch_hypothesis_claims(connection: psycopg.Connection[Any],
+                            windows: list[tuple[str, date, date]],
+                            limit: int | None,
+                            filters: "ClaimFilters | None" = None,
+                            period_column: str = "claim_init_date") -> list[tuple[str, str]]:
+    """(registration_id, json_object_perauth) for a hypothesis's claims.
+
+    Shaped exactly like fetch_latest_claims so the pipeline cannot tell the two
+    apart, but selecting across the hypothesis's windows instead of the single
+    source table. One row per registration_id: the same id can appear in two
+    tables at the cutover, and downloading it twice would be wasted work.
+    """
+    if not windows:
+        return []
+    union, params = _hypothesis_union(windows, filters, period_column, select_payload=True)
+    query = sql.SQL("""
+        SELECT registration_id, json_object_perauth
+        FROM (
+            SELECT registration_id, json_object_perauth,
+                   ROW_NUMBER() OVER (PARTITION BY registration_id ORDER BY registration_id) AS rn
+            FROM ({}) u
+        ) deduped
+        WHERE rn = 1
+        ORDER BY registration_id DESC
+    """).format(union)
+    if limit is not None:
+        query = query + sql.SQL(" LIMIT %s")
+        params = [*params, limit]
+    with connection.cursor() as cursor:
+        cursor.execute(query, tuple(params))
+        return [(str(row[0]), str(row[1])) for row in cursor.fetchall()]
 
 
 def parse_limit(value: str) -> int | None:

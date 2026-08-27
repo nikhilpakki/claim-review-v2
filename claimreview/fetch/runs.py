@@ -18,15 +18,25 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_run(run_id, destination, params, user_id=None, display_name=None):
-    """Record who started it: with one instance shared by several reviewers, a
-    blocked user needs to see whose run is in the way, not just that one is."""
+def create_run(run_id, destination, params, user_id=None, display_name=None,
+               hypothesis_id=None):
+    """Record who started it, and under which hypothesis if any.
+
+    Who: with one instance shared by several reviewers, a blocked user needs to
+    see whose run is in the way, not just that one is.
+
+    Which hypothesis: this column is the only link between a hypothesis and the
+    claims reviewed for it. fetch_run_claims already maps a run to its claims,
+    so stamping it here means progress never has to re-test a claim against
+    criteria that may have been edited since.
+    """
     db = get_db()
     db.execute(
         "INSERT INTO fetch_runs (run_id, started_at, status, destination, params_json, "
-        "started_by_user_id, started_by) VALUES (?, ?, 'running', ?, ?, ?, ?)",
+        "started_by_user_id, started_by, hypothesis_id) "
+        "VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
         (run_id, _now(), str(destination), json.dumps(params, default=str),
-         user_id, display_name),
+         user_id, display_name, hypothesis_id),
     )
     db.commit()
 

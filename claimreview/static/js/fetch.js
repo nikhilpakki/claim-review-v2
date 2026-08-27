@@ -123,6 +123,106 @@
 
   // ------------------------------------------------------------------ requests
 
+  // --- hypothesis mode -----------------------------------------------------
+  // Selecting a hypothesis fills the fields it owns and locks them. The lock
+  // is presentation only: build_options() reads these values from the stored
+  // hypothesis, never from the submission, because a disabled input is simply
+  // absent from a POST and an edited page could send anything.
+  const hypothesisSelect = document.getElementById('field-hypothesis');
+  const hypothesisHelp = document.getElementById('hypothesis-help');
+  const lockedFields = [
+    document.querySelector('[name="procedure_codes"]'),
+    document.querySelector('[name="exclude_procedure_codes"]'),
+    document.querySelector('[name="convergence"]'),
+  ].filter(Boolean);
+  const limitField = document.querySelector('[name="limit"]');
+  let hypothesisNote = null;
+  const savedValues = new Map();
+
+  function hypothesesById() {
+    if (!hypothesisSelect) return {};
+    try {
+      const list = JSON.parse(hypothesisSelect.dataset.hypotheses || '[]');
+      return list.reduce((acc, h) => { acc[String(h.id)] = h; return acc; }, {});
+    } catch (err) {
+      return {};
+    }
+  }
+  const HYPOTHESES = hypothesesById();
+
+  function setLocked(locked) {
+    lockedFields.forEach((field) => {
+      field.disabled = locked;
+      // A disabled field renders greyed by the browser; the title says why so
+      // it does not just look broken.
+      field.title = locked ? 'Fixed by the selected hypothesis' : '';
+    });
+  }
+
+  function applyHypothesis() {
+    if (!hypothesisSelect) return;
+    const chosen = HYPOTHESES[hypothesisSelect.value];
+    if (hypothesisNote) { hypothesisNote.remove(); hypothesisNote = null; }
+
+    // The batch size is prefilled but never locked, so it is remembered and
+    // restored alongside the locked fields - deselecting should put the form
+    // back exactly as the reviewer left it, not leave a hypothesis's number
+    // behind on an ordinary fetch.
+    const remembered = limitField ? lockedFields.concat([limitField]) : lockedFields;
+
+    if (!chosen) {
+      // Restore whatever the reviewer had typed before selecting one.
+      remembered.forEach((field) => {
+        if (!savedValues.has(field)) return;
+        if (field.type === 'checkbox') field.checked = savedValues.get(field);
+        else field.value = savedValues.get(field);
+      });
+      savedValues.clear();
+      setLocked(false);
+      return;
+    }
+
+    remembered.forEach((field) => {
+      if (!savedValues.has(field)) {
+        savedValues.set(field, field.type === 'checkbox' ? field.checked : field.value);
+      }
+    });
+    const includeField = document.querySelector('[name="procedure_codes"]');
+    const excludeField = document.querySelector('[name="exclude_procedure_codes"]');
+    const convergenceField = document.querySelector('[name="convergence"]');
+    if (includeField) includeField.value = chosen.procedure_codes || '';
+    if (excludeField) excludeField.value = chosen.exclude_procedure_codes || '';
+    if (convergenceField) convergenceField.checked = !!chosen.include_non_pmjay;
+    setLocked(true);
+
+    // Default the batch size to what is still outstanding, but leave it
+    // editable - fetching the sample in smaller batches is normal.
+    if (limitField && chosen.reviews_remaining) limitField.value = chosen.reviews_remaining;
+
+    hypothesisNote = document.createElement('p');
+    hypothesisNote.className = 'settings-help';
+    const bits = [
+      chosen.period_description,
+      chosen.claim_count != null ? chosen.claim_count.toLocaleString() + ' claims matched' : null,
+      'sample ' + chosen.sample_size,
+      chosen.claims_reviewed + ' reviewed',
+      chosen.reviews_remaining != null ? chosen.reviews_remaining + ' still needed' : null,
+    ].filter(Boolean);
+    hypothesisNote.textContent = bits.join(' · ');
+    if (chosen.is_stale) {
+      hypothesisNote.textContent +=
+        ' · these counts are stale: the criteria changed since it was processed.';
+    }
+    if (hypothesisHelp && hypothesisHelp.parentNode) {
+      hypothesisHelp.parentNode.appendChild(hypothesisNote);
+    }
+  }
+
+  if (hypothesisSelect) {
+    hypothesisSelect.addEventListener('change', applyHypothesis);
+    applyHypothesis();
+  }
+
   function post(url) {
     return fetch(url, { method: 'POST', body: new FormData(form) })
       .then((r) => r.json().then((data) => ({ ok: r.ok, status: r.status, data })));

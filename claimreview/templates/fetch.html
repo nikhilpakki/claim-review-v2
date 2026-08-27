@@ -69,6 +69,32 @@
   <fieldset class="settings-group">
     <legend>Filters</legend>
     <div class="settings-field">
+      <label for="field-hypothesis">Hypothesis</label>
+      <select id="field-hypothesis" name="hypothesis_id"
+              data-hypotheses="{{ hypotheses|tojson|forceescape }}">
+        <option value="">None - an ordinary fetch</option>
+        {% for h in hypotheses %}
+        <option value="{{ h.id }}">
+          {{ h.title }} &mdash; sample {{ h.sample_size }}, {{ h.claims_reviewed }} reviewed{% if h.reviews_remaining %}, {{ h.reviews_remaining }} to go{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="settings-help" id="hypothesis-help">
+        Optional. Selecting one fixes the procedure codes and the scheme filter to that hypothesis
+        and restricts selection to its time period, so the reviews count towards its sample.
+        {% if unprocessed_hypothesis_count %}
+        <br>{{ unprocessed_hypothesis_count }} hypothes{{ 'is' if unprocessed_hypothesis_count == 1 else 'es' }}
+        {{ 'is' if unprocessed_hypothesis_count == 1 else 'are' }} not listed because
+        {{ 'it has' if unprocessed_hypothesis_count == 1 else 'they have' }} not been processed yet.
+        {% endif %}
+        {% if not hypotheses %}
+        <br>No processed hypotheses yet &mdash; create and process one on the
+        <a href="{{ url_for('hypothesis.view_hypotheses') }}">Hypotheses</a> page.
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="settings-field">
       <label class="settings-checkbox">
         <input type="checkbox" name="convergence">
         <span>Include non-PMJAY policies (convergence)</span>

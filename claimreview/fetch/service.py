@@ -34,6 +34,40 @@ def _checked(form, name):
     return str(form.get(name, "")).strip().lower() not in {"", "0", "false", "off", "no"}
 
 
+def _resolve_hypothesis(raw_id, config):
+    """(id, hypothesis, windows) for a selected hypothesis, or raise.
+
+    A hypothesis has to have been processed before a fetch can run under it:
+    the point of fetching under one is to work towards its sample size, and an
+    unprocessed hypothesis has no sample size to work towards.
+
+    The period is resolved against the *warehouse's* current_date rather than
+    this machine's - they are different hosts, and "today" has to mean what the
+    warehouse means by it or the window silently covers the wrong days.
+    """
+    from .. import hypotheses  # local: hypotheses imports queries, so this would cycle
+
+    try:
+        hypothesis_id = int(raw_id)
+    except (TypeError, ValueError) as exc:
+        raise FetchInputError(f"{raw_id!r} is not a hypothesis id.") from exc
+
+    hypothesis = hypotheses.get_hypothesis(hypothesis_id)
+    if hypothesis is None:
+        raise FetchInputError("That hypothesis no longer exists.")
+    if not hypothesis["is_processed"]:
+        raise FetchInputError(
+            f"'{hypothesis['title']}' has not been processed yet, so it has no sample size. "
+            "Process it on the Hypotheses page first.")
+
+    with queries.connect(config) as connection:
+        windows, _from, _to = hypotheses.windows_for(hypothesis, connection, config)
+    if not windows:
+        raise FetchInputError(
+            f"'{hypothesis['title']}' covers no dates that the warehouse holds claims for.")
+    return hypothesis_id, hypothesis, windows
+
+
 def build_options(form, files=None, config=None, run_id=None) -> FetchOptions:
     """Turn the /fetch form into a FetchOptions. Raises FetchInputError with a
     message meant for the form, not a stack trace."""
@@ -70,6 +104,22 @@ def build_options(form, files=None, config=None, run_id=None) -> FetchOptions:
     procedure_codes = (form.get("procedure_codes") or "").strip() or None
     exclude_codes = (form.get("exclude_procedure_codes") or "").strip() or None
     hospital_type = (form.get("hospital_type") or "").strip().upper() or None
+
+    # Hypothesis mode. The overlapping fields are taken from the stored
+    # hypothesis, never from the submitted form: the form greys them out, and a
+    # greyed field is a UI courtesy, not a guarantee - a disabled input is
+    # simply absent from the submission and a crafted one could say anything.
+    # Reading them from the row is what makes the claims actually match the
+    # hypothesis the reviews will be counted against.
+    hypothesis_id, hypothesis_windows, hypothesis_label = None, None, None
+    convergence_override = False
+    raw_hypothesis = (form.get("hypothesis_id") or "").strip()
+    if raw_hypothesis:
+        hypothesis_id, hypothesis, hypothesis_windows = _resolve_hypothesis(raw_hypothesis, config)
+        procedure_codes = hypothesis["procedure_codes"] or None
+        exclude_codes = hypothesis["exclude_procedure_codes"] or None
+        convergence_override = bool(hypothesis["include_non_pmjay"])
+        hypothesis_label = hypothesis["title"]
     if hospital_type and hospital_type not in queries.HOSPITAL_TYPES:
         raise FetchInputError(
             f"Unknown hospital type {hospital_type!r}; expected one of "
@@ -80,7 +130,12 @@ def build_options(form, files=None, config=None, run_id=None) -> FetchOptions:
         destination=Path(destination),
         claim_ids=claim_ids,
         limit=limit,
-        convergence=_checked(form, "convergence"),
+        convergence=(convergence_override if raw_hypothesis
+                     else _checked(form, "convergence")),
+        hypothesis_id=hypothesis_id,
+        hypothesis_windows=hypothesis_windows,
+        hypothesis_period_column=config.get("HYPOTHESIS_PERIOD_COLUMN", "claim_init_date"),
+        hypothesis_label=hypothesis_label,
         procedure_codes=procedure_codes,
         exclude_procedure_codes=exclude_codes,
         hospital_type=hospital_type,
@@ -112,6 +167,10 @@ def describe_options(options: FetchOptions) -> dict[str, Any]:
         "claim_ids": options.claim_ids,
         "limit": options.limit,
         "convergence": options.convergence,
+        "hypothesis_id": options.hypothesis_id,
+        "hypothesis_label": options.hypothesis_label,
+        "hypothesis_windows": [[table, queries.window_bound(lo), queries.window_bound(hi)]
+                               for table, lo, hi in (options.hypothesis_windows or [])],
         "procedure_codes": options.procedure_codes,
         "exclude_procedure_codes": options.exclude_procedure_codes,
         "hospital_type": options.hospital_type,
@@ -154,7 +213,8 @@ def start(app, options: FetchOptions) -> str:
     cancel_event = fetch_progress.start(run_id, str(options.destination), params)
     runs.create_run(run_id, options.destination, params,
                     user_id=user["id"] if user else None,
-                    display_name=user["display_name"] if user else None)
+                    display_name=user["display_name"] if user else None,
+                    hypothesis_id=options.hypothesis_id)
 
     thread = threading.Thread(
         target=_run, args=(app, options, run_id, cancel_event), daemon=True

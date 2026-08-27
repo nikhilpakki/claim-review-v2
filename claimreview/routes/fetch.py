@@ -11,7 +11,7 @@ from flask import (
     Blueprint, current_app, jsonify, render_template, request, url_for,
 )
 
-from .. import fetch_progress, root_state
+from .. import fetch_progress, hypotheses, root_state
 from ..fetch import bundles, queries, runs as fetch_runs
 
 # The pipeline pulls in psycopg/pandas/openpyxl. If they are not installed yet,
@@ -86,6 +86,11 @@ def fetch_page():
         warehouse_configured=bool(config.get("REDSHIFT_HOST")),
         active_run_id=active_id,
         recent_runs=recent_runs,
+        # Only processed hypotheses can be fetched under - an unprocessed one
+        # has no sample size, which is the whole reason to fetch under it.
+        hypotheses=[hypotheses.summary_for_fetch(h) for h in hypotheses.processed_hypotheses()],
+        unprocessed_hypothesis_count=sum(
+            1 for h in hypotheses.list_hypotheses() if not h["is_processed"]),
     )
 
 

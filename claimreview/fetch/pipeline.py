@@ -87,6 +87,16 @@ class FetchOptions:
     # someone else already fetched buys nothing.
     skip_existing: bool = True
 
+    # Hypothesis mode. `hypothesis_windows` is [(table, from, to), ...] already
+    # resolved by the caller - the resolution needs the warehouse's current_date
+    # and the app's table configuration, neither of which belongs in here, and
+    # doing it once up front means the preview and the run cannot disagree about
+    # which days they cover. Empty/None means an ordinary fetch.
+    hypothesis_id: int | None = None
+    hypothesis_windows: list[tuple[str, Any, Any]] | None = None
+    hypothesis_period_column: str = "claim_init_date"
+    hypothesis_label: str | None = None
+
     source_table: str = DEFAULT_SOURCE_TABLE
     lookup_tables: list[str] | None = None
     target_schema: str = DEFAULT_TARGET_SCHEMA
@@ -573,6 +583,20 @@ def select_claims(
             fallback_tables=options.lookup_tables,
         )
         source_desc = f"specified claim ids ({len(options.claim_ids)})"
+    elif options.hypothesis_windows:
+        # A hypothesis's period spans tables that no single source_table covers,
+        # so selection reads each table's own slice of the range. An explicit id
+        # list still wins over this: pasting ids means "these claims".
+        claims = queries.fetch_hypothesis_claims(
+            connection, options.hypothesis_windows, options.limit, filters,
+            options.hypothesis_period_column,
+        )
+        limit_desc = "none" if options.limit is None else str(options.limit)
+        windows_desc = ", ".join(
+            f"{table.split('.')[-1]} {queries.window_bound(lo)}..{queries.window_bound(hi)}"
+            for table, lo, hi in options.hypothesis_windows)
+        label = options.hypothesis_label or f"hypothesis {options.hypothesis_id}"
+        source_desc = f"{label} (limit: {limit_desc}; {windows_desc})"
     else:
         claims = queries.fetch_latest_claims(
             connection, options.limit, options.source_table, filters,
