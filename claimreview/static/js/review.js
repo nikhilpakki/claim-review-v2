@@ -31,7 +31,7 @@
           <button type="button" class="flagged" data-status="flagged">Flag</button>
           <button type="button" class="rejected" data-status="rejected">Reject</button>
         </div>
-        <input type="text" id="reviewer-input" placeholder="Your name" value="">
+        <p class="hint" id="reviewer-identity">Recorded as the signed-in user.</p>
         <textarea id="notes-input" placeholder="Notes (optional)"></textarea>
         <button type="submit" style="margin-top:0.5rem;">Submit decision</button>
       </form>
@@ -61,7 +61,6 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: selectedStatus,
-          reviewer: document.getElementById('reviewer-input').value,
           notes: document.getElementById('notes-input').value,
         }),
       }).then((r) => r.json()).then(() => load());
