@@ -1,11 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Not allowed - Claim Review{% endblock %}
 {% block content %}
-<h1>Administrators only</h1>
+{# Two callers: detection settings, which really are administrators-only, and a
+   rule someone else wrote, which is not an admin question at all - so the
+   heading and text come from `message` when one is given. #}
+<h1>{{ heading or 'Administrators only' }}</h1>
 <p class="hint">
-  Rules and detection settings are managed centrally, because they decide what every reviewer sees
-  and what gets billed to AWS. You can still choose which rules are active for your own view from
-  the Rules page.
+  {% if message %}
+    {{ message }}
+  {% else %}
+    Detection settings are managed centrally, because they decide what every reviewer sees
+    and what gets billed to AWS. Anyone can add a rule from the Rules page, and you can always
+    choose which rules are active for your own view there.
+  {% endif %}
 </p>
-<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<a class="back-link" href="{{ url_for('rules.view_rules') if message else url_for('claims.list_claims_view') }}">&larr;
+  {{ 'Back to rules' if message else 'Back to claims' }}</a>
 {% endblock %}

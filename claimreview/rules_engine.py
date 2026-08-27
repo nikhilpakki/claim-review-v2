@@ -59,14 +59,35 @@ def _normalize_config(rule_type, config):
     return config
 
 
+def can_modify_rule(rule, user):
+    """Whether `user` may edit or delete `rule`: its author, or any admin.
+
+    Anyone can write a rule and everyone sees every rule, so the rules list is
+    shared but not jointly owned - one reviewer must not be able to rewrite
+    another's rule out from under them. Switching a rule on or off is not an
+    edit and is deliberately not gated here: that writes a per-user override
+    (users.set_rule_preference) and touches nobody else's workspace.
+
+    A rule with no author (created before rules had one, when only an admin
+    could add them) is modifiable by admins only.
+    """
+    if not user:
+        return False
+    if user["is_admin"]:
+        return True
+    author = rule.get("created_by_user_id") if isinstance(rule, dict) else rule["created_by_user_id"]
+    return author is not None and author == user["id"]
+
+
 def list_rules(user_id=None):
     """Every rule, with `enabled` reflecting this user's own choice.
 
-    Rules are defined centrally by an administrator; whether one is active is
-    a personal preference. `default_enabled` keeps the central value so the UI
-    can show when someone has departed from it, and a rule the user has never
-    touched simply follows that default - so a newly added rule is live for
-    everyone at once instead of staying invisible until each person opts in.
+    Rules are visible to everyone regardless of who wrote them; whether one is
+    active is a personal preference. `default_enabled` keeps the value the
+    author set so the UI can show when someone has departed from it, and a rule
+    the user has never touched simply follows that default - so a newly added
+    rule is live for everyone at once instead of staying invisible until each
+    person opts in.
     """
     db = get_db()
     rows = db.execute("SELECT * FROM rules ORDER BY id").fetchall()
@@ -91,12 +112,20 @@ def get_rule(rule_id):
     return dict(row, config=_normalize_config(row["rule_type"], json.loads(row["config_json"]))) if row else None
 
 
-def create_rule(name, rule_type, config):
+def create_rule(name, rule_type, config, created_by_user_id=None, created_by=None):
+    """Add a rule, recording who wrote it.
+
+    The author is what can_modify_rule() reads later; `created_by` is their
+    display name captured now, so the rule can still name its author after the
+    account is renamed or removed.
+    """
     if rule_type not in RULE_TYPES:
         raise ValueError(f"Unknown rule_type: {rule_type}")
     db = get_db()
-    db.execute("INSERT INTO rules (name, rule_type, config_json, enabled) VALUES (?, ?, ?, 1)",
-               (name, rule_type, json.dumps(config)))
+    db.execute(
+        "INSERT INTO rules (name, rule_type, config_json, enabled, created_by_user_id, created_by) "
+        "VALUES (?, ?, ?, 1, ?, ?)",
+        (name, rule_type, json.dumps(config), created_by_user_id, created_by))
     db.commit()
 
 

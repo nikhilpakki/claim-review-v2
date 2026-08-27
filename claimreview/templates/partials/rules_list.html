@@ -19,18 +19,32 @@
         {%- if rule.rule_type != 'documents_present' %}
         ; doc types: {{ (rule.config.doc_scope_tags or ['document', 'photo'])|join(', ') }}
         {%- endif %}
+        {#- Anyone can write a rule now, so whose it is is worth showing. Rules
+            that predate authorship have no author on purpose - they were
+            central rules - and are labelled as such rather than left blank. -#}
+        {%- if rule.created_by %}
+        &middot; by {{ rule.created_by }}{{ ' (you)' if rule.created_by_user_id == current_user_id }}
+        {%- elif rule.created_by_user_id is none %}
+        &middot; central rule (administrators)
+        {%- endif %}
       </span>
     </span>
     <span class="doc-tags">
       <span class="badge {{ 'status-completed' if rule.enabled else 'status-not_started' }}">{{ 'enabled' if rule.enabled else 'disabled' }}</span>
+      {#- Edit/Delete belong to the rule's author (or an admin); Enable/Disable
+          is a personal override, so it stays available to everyone. -#}
+      {% if rule.can_edit %}
       <a class="btn btn-secondary ajax-rule-edit" href="{{ url_for('rules.edit_rule_form', rule_id=rule.id) }}{{ next_qs }}" style="text-decoration:none; display:inline-block;">Edit</a>
+      {% endif %}
       <form method="post" action="{{ url_for('rules.toggle_rule', rule_id=rule.id) }}{{ next_qs }}" style="display:inline;" class="ajax-rules-form">
         <button type="submit" class="btn-secondary">{{ 'Disable' if rule.enabled else 'Enable' }}</button>
       </form>
+      {% if rule.can_edit %}
       <form method="post" action="{{ url_for('rules.delete_rule', rule_id=rule.id) }}{{ next_qs }}" style="display:inline;"
             class="ajax-rules-form" data-confirm="Delete this rule?">
         <button type="submit" class="btn-secondary">Delete</button>
       </form>
+      {% endif %}
     </span>
   </li>
   {% else %}

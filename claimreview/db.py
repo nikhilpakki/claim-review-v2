@@ -173,7 +173,15 @@ CREATE TABLE IF NOT EXISTS rules (
   rule_type TEXT NOT NULL,
   config_json TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Anyone may write a rule and everyone sees all of them, so editing and
+  -- deleting are restricted to the author (or an admin) - which needs an
+  -- author on the row. Plain INTEGER, never INTEGER PRIMARY KEY: that is a
+  -- rowid alias in SQLite and would silently turn NULL into a real id.
+  created_by_user_id INTEGER,
+  -- The author's name as it was at the time, like fetch_runs.started_by, so a
+  -- rule still says who wrote it after that account is gone.
+  created_by TEXT
 );
 """
 
@@ -194,6 +202,13 @@ _MIGRATED_COLUMNS = {
         # user needs to know whose run is in the way.
         "started_by_user_id": "INTEGER",
         "started_by": "TEXT",
+    },
+    # Rules predating this column were created when only an admin could make
+    # one, so leaving them NULL is accurate: they belong to no individual and
+    # stay admin-only to edit or delete. See rules_engine.can_modify_rule.
+    "rules": {
+        "created_by_user_id": "INTEGER",
+        "created_by": "TEXT",
     },
 }
 

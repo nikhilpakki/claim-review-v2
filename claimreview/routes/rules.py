@@ -3,7 +3,6 @@ from urllib.parse import quote
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
 from .. import csv_data, procedure_codes, rules_engine, users
-from .auth import admin_required
 
 bp = Blueprint("rules", __name__)
 
@@ -41,8 +40,12 @@ def _rules_context(**extra):
     user_id = users.current_user_id()
     user = users.current_user()
     return {
-        "rules": rules_engine.list_rules(user_id),
+        # can_edit drives the Edit/Delete buttons; Enable/Disable is everyone's
+        # to use, so it is not gated on it.
+        "rules": [dict(rule, can_edit=rules_engine.can_modify_rule(rule, user))
+                  for rule in rules_engine.list_rules(user_id)],
         "is_admin": bool(user and user["is_admin"]),
+        "current_user_id": user_id,
         "upload_meta": csv_data.get_upload_meta(user_id),
         "available_fields": csv_data.get_available_fields(user_id),
         "query_aliases": [q["Alias"] for q in current_app.config["DEFAULT_QUERIES"]],
@@ -68,6 +71,31 @@ def _fragments(status="ok", **extra):
         "rules_list_html": render_template("partials/rules_list.html", **ctx),
         "csv_html": render_template("partials/csv_status.html", **ctx),
     })
+
+
+def _rule_or_forbidden(rule_id):
+    """(rule, error_response) for a rule this user is allowed to change.
+
+    Anyone may add a rule and everyone sees every rule, but editing and
+    deleting belong to the author or an admin - see
+    rules_engine.can_modify_rule. Returns (None, response) when the rule is
+    missing or off-limits, so each route can return that response as-is.
+    """
+    rule = rules_engine.get_rule(rule_id)
+    if not rule:
+        if _is_ajax():
+            return None, (_fragments(status="error", rule_error="That rule no longer exists."), 404)
+        return None, _redirect_to_rules()
+    if not rules_engine.can_modify_rule(rule, users.current_user()):
+        error = (f"\"{rule['name']}\" was created by "
+                 f"{rule['created_by'] or 'an administrator'}. Only its author or an "
+                 "administrator can change it - you can still enable or disable it "
+                 "for yourself.")
+        if _is_ajax():
+            return None, (_fragments(status="error", rule_error=error), 403)
+        return None, (render_template("forbidden.html", heading="Not your rule",
+                                      message=error), 403)
+    return rule, None
 
 
 def _procedure_codes_from_form(form):
@@ -150,11 +178,11 @@ def view_rules():
 
 @bp.route("/rules/<int:rule_id>/edit")
 def edit_rule_form(rule_id):
-    rule = rules_engine.get_rule(rule_id)
+    rule, forbidden = _rule_or_forbidden(rule_id)
+    if forbidden:
+        return forbidden
     if _is_ajax():
         return _fragments(edit_rule=rule)
-    if not rule:
-        return _redirect_to_rules()
     return render_template("rules.html", **_rules_context(edit_rule=rule))
 
 
@@ -187,7 +215,6 @@ def clear_data():
 
 
 @bp.route("/rules/create", methods=["POST"])
-@admin_required
 def create_rule():
     name = (request.form.get("name") or "").strip()
     rule_type = request.form.get("rule_type")
@@ -204,20 +231,21 @@ def create_rule():
             return _fragments(status="error", rule_error=error), 400
         return render_template("rules.html", **_rules_context(rule_error=error)), 400
 
-    rules_engine.create_rule(name, rule_type, config)
+    user = users.current_user()
+    rules_engine.create_rule(
+        name, rule_type, config,
+        created_by_user_id=user["id"] if user else None,
+        created_by=(user["display_name"] or user["username"]) if user else None)
     if _is_ajax():
         return _fragments(status="saved")
     return _redirect_to_rules()
 
 
 @bp.route("/rules/<int:rule_id>/update", methods=["POST"])
-@admin_required
 def update_rule(rule_id):
-    rule = rules_engine.get_rule(rule_id)
-    if not rule:
-        if _is_ajax():
-            return _fragments(status="error"), 404
-        return _redirect_to_rules()
+    rule, forbidden = _rule_or_forbidden(rule_id)
+    if forbidden:
+        return forbidden
 
     name = (request.form.get("name") or "").strip()
     rule_type = request.form.get("rule_type")
@@ -241,8 +269,10 @@ def update_rule(rule_id):
 
 
 @bp.route("/rules/<int:rule_id>/delete", methods=["POST"])
-@admin_required
 def delete_rule(rule_id):
+    _rule, forbidden = _rule_or_forbidden(rule_id)
+    if forbidden:
+        return forbidden
     rules_engine.delete_rule(rule_id)
     if _is_ajax():
         return _fragments(status="saved")
@@ -254,8 +284,10 @@ def toggle_rule(rule_id):
     """Switching a rule on or off is a personal preference, not an edit.
 
     It writes an override for the signed-in user, so one reviewer muting a
-    noisy rule does not mute it for everyone. An administrator who wants a rule
-    off for the whole team edits the rule itself.
+    noisy rule does not mute it for everyone - which is why this route is open
+    to everybody while editing and deleting are not. Changing the default for
+    the whole team means editing the rule, which only its author or an admin
+    can do.
     """
     user_id = users.current_user_id()
     rules = {r["id"]: r for r in rules_engine.list_rules(user_id)}
