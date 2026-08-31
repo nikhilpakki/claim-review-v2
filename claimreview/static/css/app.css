@@ -343,6 +343,17 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .rule-issue-items li { margin-bottom: 0.15rem; }
 .rule-issue-more { list-style: none; margin-left: -1.1rem; font-style: italic; color: var(--muted); }
 
+/* A rule's file reference opens that document/page in the preview pane. It has
+   to read as clickable without shouting, since a failing rule can list several. */
+a.rule-ref { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }
+a.rule-ref:hover { text-decoration: none; border-bottom-style: solid; }
+
+/* Rules whose procedure-code scope excludes this claim: present, but visibly
+   set aside rather than competing with the results that do apply. */
+.rule-skipped { background: transparent; border-style: dashed; }
+.rule-skipped > .rule-message { color: var(--muted); }
+.rule-skipped #skipped-rules { margin-top: 0.5rem; }
+
 /* ---------------------------------------------------------------- document viewer */
 
 .doc-viewer { display: flex; gap: 1.5rem; }

@@ -114,6 +114,34 @@ def _section_kv_pairs(page):
             yield key, line
 
 
+def page_locations(page, file_name):
+    """{(file, key, value): location} for one page, keyed as search_* expects.
+
+    page_kv_dict() alone answers "was it found"; this answers "where", which is
+    what turns a rule result into a link that opens the preview on the right
+    page with the field boxed. Only forms carry geometry from Textract, so
+    queries, table cells and section lines get a page-level target with no
+    highlight - the same compromise documents_from_docs() makes.
+    """
+    base = {"page_number": page["page_number"], "image_rel": page.get("image_rel"),
+            "width": page.get("width"), "height": page.get("height")}
+    locations = {}
+    for form in page.get("forms", []):
+        locations[(file_name, form["key"], form["value"])] = {
+            **base, "key_bbox": form.get("key_bbox"), "value_bbox": form.get("value_bbox")}
+        locations.setdefault((file_name, form["value"], form["key"]), {
+            **base, "key_bbox": form.get("value_bbox"), "value_bbox": form.get("key_bbox")})
+    for alias, ans in (page.get("queries") or {}).items():
+        answer = (ans.get("answer") or "").strip()
+        if answer:
+            locations.setdefault((file_name, alias, answer),
+                                 {**base, "key_bbox": None, "value_bbox": None})
+    for key, value in _section_kv_pairs(page):
+        locations.setdefault((file_name, key, value),
+                             {**base, "key_bbox": None, "value_bbox": None})
+    return locations
+
+
 def page_kv_dict(page):
     """{key: [values]} for a single cached page's forms + query answers +
     table cells + LAYOUT section text - the same extraction

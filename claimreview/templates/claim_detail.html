@@ -357,27 +357,48 @@ window.loadRules = function () {
       el.innerHTML = '<p class="hint">No rules configured yet. <a href="/rules">Add some on the Rules page</a>.</p>';
       return;
     }
-    function renderIssues(issues) {
-      return issues.map((iss) => {
-        const items = (iss.items || []);
-        const shown = items.slice(0, 8);
-        const extra = items.length - shown.length;
-        const list = shown.length
-          ? `<ul class="rule-issue-items">${shown.map((it) => `<li>${escapeHtml(it)}</li>`).join('')}${extra > 0 ? `<li class="rule-issue-more">+${extra} more</li>` : ''}</ul>`
-          : '';
-        return `<div class="rule-issue">
-          <p class="rule-issue-summary">${escapeHtml(iss.summary)}</p>
-          ${list}
-        </div>`;
-      }).join('');
+    // A reference is only useful if you can get to it. Where the rule knew
+    // which document (and page) a finding came from, render it as a link that
+    // opens the preview there; where it did not - a file that is missing from
+    // the folder has no page - fall back to plain text.
+    function renderRef(ref) {
+      if (!ref.file) return `<li>${escapeHtml(ref.label)}</li>`;
+      const attrs = `data-file="${escapeHtml(ref.file)}" data-page="${ref.page || 1}"`
+        + (ref.bbox ? ` data-bbox='${escapeHtml(JSON.stringify(ref.bbox))}'` : '');
+      const hint = ref.page ? 'Open this page in the preview'
+                            : 'Open this document in the preview';
+      return `<li><a href="#" class="rule-ref" ${attrs} title="${hint}">`
+        + `${escapeHtml(ref.label)}</a></li>`;
     }
 
-    el.innerHTML = results.map((r) => {
+    function renderRefList(refs, items) {
+      // refs and items describe the same findings; refs is preferred because it
+      // carries the location. items remains the fallback for anything that
+      // predates it.
+      const entries = (refs && refs.length)
+        ? refs
+        : (items || []).map((it) => ({ label: it, file: null, page: null }));
+      const shown = entries.slice(0, 8);
+      const extra = entries.length - shown.length;
+      if (!shown.length) return '';
+      return `<ul class="rule-issue-items">${shown.map(renderRef).join('')}`
+        + `${extra > 0 ? `<li class="rule-issue-more">+${extra} more</li>` : ''}</ul>`;
+    }
+
+    function renderIssues(issues) {
+      return issues.map((iss) => `<div class="rule-issue">
+          <p class="rule-issue-summary">${escapeHtml(iss.summary)}</p>
+          ${renderRefList(iss.refs, iss.items)}
+        </div>`).join('');
+    }
+
+    function renderRule(r) {
       const cls = r.status === 'fail' ? 'tag-rule-violation' : (r.status === 'pass' ? 'tag-pass' : 'tag-nodata');
       const label = r.status === 'fail' ? 'FAIL' : (r.status === 'pass' ? 'PASS' : 'NO DATA');
       const body = (r.issues && r.issues.length)
         ? renderIssues(r.issues)
-        : `<p class="rule-message">${escapeHtml(r.message || '')}</p>`;
+        : `<p class="rule-message">${escapeHtml(r.message || '')}</p>`
+          + renderRefList(r.refs, null);
       return `<div class="rule-item">
         <div class="rule-item-header">
           <span class="rule-name">${escapeHtml(r.name)}</span>
@@ -385,7 +406,47 @@ window.loadRules = function () {
         </div>
         ${body}
       </div>`;
-    }).join('');
+    }
+
+    // Rules whose procedure-code scope excludes this claim say nothing about
+    // it. They are folded away rather than dropped, so a reviewer wondering
+    // where a rule went can still see it and why it did not run.
+    const applicable = results.filter((r) => r.applicable !== false);
+    const skipped = results.filter((r) => r.applicable === false);
+
+    let html = applicable.length
+      ? applicable.map(renderRule).join('')
+      : '<p class="hint">No rules apply to this claim.</p>';
+    if (skipped.length) {
+      html += `<div class="rule-item rule-skipped">
+        <p class="rule-message">
+          ${skipped.length} rule${skipped.length === 1 ? '' : 's'} not applicable to this claim
+          <a href="#" id="show-skipped-rules">show</a>
+        </p>
+        <div id="skipped-rules" hidden>${skipped.map(renderRule).join('')}</div>
+      </div>`;
+    }
+    el.innerHTML = html;
+
+    const toggle = document.getElementById('show-skipped-rules');
+    if (toggle) toggle.addEventListener('click', (e) => {
+      e.preventDefault();
+      const box = document.getElementById('skipped-rules');
+      box.hidden = !box.hidden;
+      toggle.textContent = box.hidden ? 'show' : 'hide';
+    });
+
+    el.querySelectorAll('a.rule-ref').forEach((link) => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        let highlight = null;
+        if (link.dataset.bbox) {
+          try { highlight = { bbox: JSON.parse(link.dataset.bbox) }; } catch (err) { highlight = null; }
+        }
+        window.openPreview(window.CLAIM_ID, link.dataset.file,
+                           parseInt(link.dataset.page, 10) || 1, highlight);
+      });
+    });
   });
 };
 </script>

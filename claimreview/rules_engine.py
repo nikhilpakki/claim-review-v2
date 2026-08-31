@@ -22,6 +22,10 @@ from . import (claim_extract, claim_scanner, claim_summary, classify, csv_data,
 from .db import get_db
 
 RULE_TYPES = ("field_present", "field_consistency", "length_of_stay", "documents_present")
+# How many "here is where it was found" links a passing rule shows. A claim can
+# carry the same value on dozens of pages, and listing all of them buries the
+# result it is meant to support.
+MAX_PASS_REFS = 5
 # "document"/"photo"/"gps photo" are mutually exclusive (a page's single
 # content_type); "has face" is an independent, co-occurring tag (a page can
 # be e.g. both "photo" and "has face") - see _page_scope_tags below.
@@ -179,6 +183,28 @@ def _claim_procedure_codes(value):
     return codes
 
 
+# A rule's finding is only actionable if the reviewer can get to the page it is
+# about. Every issue therefore carries `refs` alongside its `items`: the same
+# entries, but with the document and page attached so the UI can open the
+# preview at the right place. `items` stays a plain list of strings because it
+# is what already-cached rollups hold, and the two are built together so they
+# cannot drift apart.
+#
+# page=None means "this finding is about the document as a whole" - a value
+# that was not found anywhere in it has no particular page to point at, so the
+# preview opens at the start.
+
+
+def _ref(label, file_name=None, page=None, bbox=None):
+    return {"label": label, "file": file_name, "page": page, "bbox": bbox}
+
+
+def _issue(summary, refs):
+    """An issue carrying both renderings of the same list."""
+    refs = list(refs)
+    return {"summary": summary, "items": [ref["label"] for ref in refs], "refs": refs}
+
+
 def _procedure_codes_match(claim_id, config, user_id=None):
     """Whether `rule` (via its config's procedure_codes list) applies to this
     claim. ["All"] (the default, case-insensitive) always matches; otherwise at
@@ -315,8 +341,18 @@ def _doc_page_hits(doc, page_filter, run_search):
         if page_filter is not None and not page_filter(page):
             continue
         kvs = search.page_kv_dict(page)
-        result = run_search({doc["rel_path"]: kvs}) if kvs else {"best": None}
-        results.append((page["page_number"], result["best"] is not None, result["best"]))
+        # The locations index is what lets a hit be turned into a link that
+        # opens the preview on this page with the matching field boxed.
+        locations = search.page_locations(page, doc["rel_path"]) if kvs else {}
+        result = run_search({doc["rel_path"]: kvs}, locations) if kvs else {"best": None}
+        best = result["best"]
+        if best is not None and best.get("page_number") is None:
+            # Queries, table cells and section lines have no geometry, so they
+            # fall back to a page-level target - but the page itself is always
+            # known here, and without it a PASS cannot link anywhere.
+            best = {**best, "page_number": page["page_number"],
+                    "image_rel": page.get("image_rel")}
+        results.append((page["page_number"], best is not None, best))
     return results
 
 
@@ -367,8 +403,8 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
             return {"status": "no_data", "message": f"No CSV value for '{csv_field}' on this claim"}
         label = f"'{value}'"
 
-        def run_search(subset):
-            return search.search_kvs(subset, value)
+        def run_search(subset, locations=None):
+            return search.search_kvs(subset, value, locations=locations)
     else:
         keyword = (config.get("keyword") or "").strip()
         if not keyword:
@@ -377,9 +413,11 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         case_insensitive = config.get("case_insensitive", True)
         label = f"pattern '{keyword}'" if regex else f"'{keyword}'"
 
-        def run_search(subset):
+        def run_search(subset, locations=None):
             try:
-                return search.search_keyword(subset, keyword, regex=regex, case_insensitive=case_insensitive)
+                return search.search_keyword(subset, keyword, regex=regex,
+                                             case_insensitive=case_insensitive,
+                                             locations=locations)
             except search.InvalidKeywordPattern as exc:
                 raise ValueError(f"Invalid regex pattern: {exc}") from exc
 
@@ -403,28 +441,53 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
     if scope == "all_docs":
         missing = sorted(name for name, hit in doc_hit.items() if not hit)
         passed = not missing
-        issues = [] if passed else [{
-            "summary": f"Missing from {len(missing)} of {len(doc_hit)} document(s) ({page_scope_label} required)",
-            "items": missing,
-        }]
+        issues = [] if passed else [_issue(
+            f"Missing from {len(missing)} of {len(doc_hit)} document(s) ({page_scope_label} required)",
+            [_ref(name, name) for name in missing],
+        )]
+        # A passing all_docs rule gets a reference per document it was found
+        # in, for the same reason the any_doc case does: "present everywhere"
+        # is only checkable if each "everywhere" can be opened.
+        pass_refs = []
+        if passed:
+            for name in sorted(doc_hit):
+                hit = next((h for _, matched, h in doc_page_hits[name] if matched and h), None)
+                page = (hit or {}).get("page_number")
+                pass_refs.append(_ref(f"{name} p{page}" if page else name, name, page,
+                                      (hit or {}).get("value_bbox") or (hit or {}).get("key_bbox")))
         return {
             "status": "pass" if passed else "fail",
             "message": (f"{label} found ({page_scope_label}) in all {len(doc_hit)} document(s)" if passed
                         else f"{label} missing from {len(missing)} of {len(doc_hit)} document(s)"),
             "issues": issues,
             "missing_documents": missing,
+            "refs": pass_refs[:MAX_PASS_REFS],
         }
 
     matched_doc = next((name for name, hit in doc_hit.items() if hit), None)
     if matched_doc:
         first_hit = next(hit for _, matched, hit in doc_page_hits[matched_doc] if matched)
-        return {"status": "pass",
-                "message": f"{label} found ({page_scope_label}, {first_hit['method']} match in {matched_doc})",
-                "issues": [], "match": first_hit}
+        page = first_hit.get("page_number")
+        where = f"{matched_doc} p{page}" if page else matched_doc
+        return {
+            "status": "pass",
+            "message": f"{label} found ({page_scope_label}, {first_hit['method']} match in {where})",
+            "issues": [],
+            "match": first_hit,
+            # A PASS deserves a reference as much as a FAIL: "it is there" is
+            # only checkable if you can go and look at where.
+            "refs": [_ref(where, matched_doc, page,
+                          first_hit.get("value_bbox") or first_hit.get("key_bbox"))],
+        }
+    # Not found anywhere. There is no page to point at, but the documents that
+    # were searched are exactly what a reviewer wants to open to see for
+    # themselves, so they are listed as whole-document references.
+    searched = sorted(doc_hit)
     return {
         "status": "fail",
         "message": f"{label} not found ({page_scope_label}) in any document",
-        "issues": [{"summary": f"{label} not found ({page_scope_label}) in any document", "items": []}],
+        "issues": [_issue(f"{label} not found in any of {len(searched)} searched document(s)",
+                          [_ref(name, name) for name in searched])],
         "match": None,
     }
 
@@ -481,18 +544,21 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
                 mismatches.append(occ)
         distinct_values = sorted({occ["answer"] for occ in occurrences})
         if mismatches:
-            issues.append({
-                "summary": f"Doesn't match CSV {csv_field}='{csv_value}'",
-                "items": [f"'{occ['answer']}' — {occ['file']}" for occ in mismatches],
-            })
+            issues.append(_issue(
+                f"Doesn't match CSV {csv_field}='{csv_value}'",
+                [_ref(f"'{occ['answer']}' — {occ['file']} p{occ['page_number']}",
+                      occ["file"], occ["page_number"]) for occ in mismatches],
+            ))
     else:
         clusters = _cluster_values(occurrences)
         distinct_values = [c["occs"][0]["answer"] for c in clusters]
         if len(clusters) > 1:
-            issues.append({
-                "summary": "Varies across documents",
-                "items": [f"'{c['occs'][0]['answer']}' — {c['occs'][0]['file']}" for c in clusters],
-            })
+            issues.append(_issue(
+                "Varies across documents",
+                [_ref(f"'{c['occs'][0]['answer']}' — {c['occs'][0]['file']} "
+                      f"p{c['occs'][0]['page_number']}",
+                      c["occs"][0]["file"], c["occs"][0]["page_number"]) for c in clusters],
+            ))
 
     if config.get("scope", "any_doc") == "all_docs":
         # Same any_page/all_pages x any_doc/all_docs scope field_present
@@ -512,11 +578,11 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
         )
         if missing:
             page_scope_label = "every page" if page_scope == "all_pages" else "at least one page"
-            issues.append({
-                "summary": f"Missing from {len(missing)} of {len(considered_pages)} document(s) "
-                           f"({page_scope_label} required)",
-                "items": missing,
-            })
+            issues.append(_issue(
+                f"Missing from {len(missing)} of {len(considered_pages)} document(s) "
+                f"({page_scope_label} required)",
+                [_ref(name, name) for name in missing],
+            ))
 
     return {
         "status": "pass" if not issues else "fail",
@@ -525,6 +591,10 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
         "issues": issues,
         "distinct_values": distinct_values,
         "occurrences": occurrences, "csv_value": csv_value,
+        # Where the agreeing values were read from, so a PASS is checkable too.
+        "refs": [] if issues else [
+            _ref(f"'{occ['answer']}' — {occ['file']} p{occ['page_number']}",
+                 occ["file"], occ["page_number"]) for occ in occurrences[:MAX_PASS_REFS]],
     }
 
 
@@ -574,10 +644,12 @@ def _evaluate_length_of_stay(claim_id, docs, config, settings, ctx):
                                  "extracted_date": match[0].date().isoformat(),
                                  "source": match[1]["file"]}
             if not matches:
-                issues.append({
-                    "summary": f"Extracted {label} date differs from CSV ({csv_dt.date()})",
-                    "items": [f"{match[0].date()} — {match[1]['file']}"],
-                })
+                occ = match[1]
+                issues.append(_issue(
+                    f"Extracted {label} date differs from CSV ({csv_dt.date()})",
+                    [_ref(f"{match[0].date()} — {occ['file']} p{occ['page_number']}",
+                          occ["file"], occ["page_number"])],
+                ))
 
     return {
         "status": "pass" if not issues else "fail",
@@ -658,6 +730,9 @@ def _evaluate_documents_present(claim_id, docs, config, settings, ctx):
                 missing.append(display)
         return missing, unverifiable, checked
 
+    # No refs on this evaluator's issues on purpose: every finding here is
+    # about something *absent* - a declared file that is not in the folder, a
+    # required document type nobody declared - so there is no page to open.
     issues = []
     notes = []
     declared_checked = 0
@@ -778,7 +853,13 @@ def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None)
             continue
         applies, reason = _procedure_codes_match(claim_id, rule["config"], user_id)
         if not applies:
-            outcome = {"status": "no_data", "message": f"Not applicable to this claim ({reason})"}
+            # `applicable: False` separates "this rule does not concern this
+            # claim" from the other no_data cases, which do concern it and are
+            # worth reading ("not processed yet", "no CSV value"). Only the
+            # former is noise on a claim page.
+            outcome = {"status": "no_data", "applicable": False,
+                       "message": f"Not applicable to this claim ({reason})",
+                       "not_applicable_reason": reason}
         else:
             try:
                 outcome = _EVALUATORS[rule["rule_type"]](claim_id, docs, rule["config"], settings, ctx)
