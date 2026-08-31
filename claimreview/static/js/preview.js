@@ -156,6 +156,56 @@
     });
   }
 
+  // What is currently on screen. The arrow keys move relative to this, and it
+  // is the only state the keyboard handler needs - the page count comes from
+  // the same response that rendered the page, so it cannot disagree with the
+  // "Page 3 / 10" the reviewer is reading.
+  let current = null;
+
+  function documentOrder() {
+    // The documents tab, in the order the reviewer sees it. Taken from the DOM
+    // rather than a separate list so up/down can never disagree with what is
+    // on the page - including any grouping or sorting applied there.
+    return [...document.querySelectorAll('#tab-documents li[data-doc-id]')]
+      .map((li) => li.dataset.docId);
+  }
+
+  function typingInAField(target) {
+    if (!target) return false;
+    if (target.isContentEditable) return true;
+    return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+  }
+
+  // Arrow keys: left/right turn the page within the open document, up/down move
+  // to the previous/next document. At either end nothing happens - deliberately
+  // silent rather than wrapping around, since wrapping from the last page back
+  // to the first reads as a jump to a different document.
+  document.addEventListener('keydown', (e) => {
+    if (!current) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    // Never steal a keystroke from a note, a search box or a select.
+    if (typingInAField(e.target)) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      const next = current.page + (e.key === 'ArrowRight' ? 1 : -1);
+      if (next < 1 || next > current.numPages) return;   // first/last page: no-op
+      e.preventDefault();
+      window.openPreview(current.claimId, current.docId, next, null);
+      return;
+    }
+
+    const docs = documentOrder();
+    const at = docs.indexOf(current.docId);
+    if (at === -1) return;
+    const target = at + (e.key === 'ArrowDown' ? 1 : -1);
+    if (target < 0 || target >= docs.length) return;     // first/last doc: no-op
+    e.preventDefault();
+    // A different document always opens at its first page: page 7 of the last
+    // document says nothing about where to be in the next one.
+    window.openPreview(current.claimId, docs[target], 1, null);
+  });
+
   window.openPreview = function (claimId, docId, page, highlight) {
     container.innerHTML = '<p class="hint">Loading preview...</p>';
     fetch(`/api/claims/${claimId}/doc/${encodeDocId(docId)}/page/${page}/blocks`)
@@ -165,6 +215,11 @@
           container.innerHTML = `<p class="hint">${escapeHtml(data.error || 'Could not load preview.')}</p>`;
           return;
         }
+        current = {
+          claimId, docId,
+          page: data.page_number,
+          numPages: data.num_pages || 1,
+        };
         render(claimId, docId, data, highlight);
       });
   };
