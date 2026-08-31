@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}My reviews - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<h1>My reviews</h1>
+<p class="hint">
+  Every claim you have recorded a decision on, grouped by the hypothesis it was fetched under.
+  Where you changed your mind about a claim, the decision shown is the one that currently stands.
+  Click a claim to open it.
+</p>
+
+{% if not groups %}
+<p class="hint">
+  You have not recorded any decisions yet. Open a claim, go to its <strong>Review</strong> tab, and
+  approve, flag or reject it.
+</p>
+{% else %}
+<p class="hint">
+  {{ totals.claims }} claim{{ '' if totals.claims == 1 else 's' }} reviewed &mdash;
+  {% for status, count in totals.by_status.items() %}
+  <span class="badge {{ status }}">{{ count }} {{ status }}</span>
+  {% endfor %}
+</p>
+
+{% for group in groups %}
+<h2 style="margin-top:1.6rem; font-size:1.05rem;">
+  {% if group.hypothesis_id %}
+  <a href="{{ url_for('hypothesis.view_hypotheses') }}">{{ group.title }}</a>
+  {% else %}
+  {#- Claims reviewed outside any campaign. Real work, so it is reported rather
+      than hidden, but listed last. -#}
+  {{ no_hypothesis_label }}
+  {% endif %}
+  <span class="doc-group">({{ group.total }})</span>
+</h2>
+<p class="hint">
+  {% for status, count in group.counts.items() %}
+  <span class="badge {{ status }}">{{ count }} {{ status }}</span>
+  {% endfor %}
+</p>
+<ul class="doc-list">
+  {% for claim in group.claims %}
+  <li>
+    <span class="doc-text">
+      {% if claim.available %}
+      <a class="doc-file-name" href="{{ url_for('claims.claim_detail', claim_id=claim.claim_id) }}">{{ claim.claim_id }}</a>
+      {% else %}
+      <span class="doc-file-name">{{ claim.claim_id }}</span>
+      <span class="doc-dir-path">not in the current folder</span>
+      {% endif %}
+      {% if claim.notes %}<span class="doc-dir-path">{{ claim.notes }}</span>{% endif %}
+      <span class="doc-dir-path">decided {{ claim.created_at }}</span>
+    </span>
+    <span class="doc-tags">
+      <span class="badge {{ claim.status }}">{{ claim.status }}</span>
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% endfor %}
+{% endif %}
+{% endblock %}

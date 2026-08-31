@@ -13,8 +13,9 @@ def create_app(config_class=Config):
     init_dirs(config_class)
     init_db(app)
 
-    from .routes import (auth, browse, claims, fetch, hypothesis, process,
-                         search_routes, documents, review, settings, rules)
+    from .routes import (auth, browse, claims, fetch, hypothesis, personal,
+                         process, search_routes, documents, review, settings,
+                         rules)
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(browse.bp)
@@ -27,6 +28,7 @@ def create_app(config_class=Config):
     app.register_blueprint(settings.bp)
     app.register_blueprint(rules.bp)
     app.register_blueprint(hypothesis.bp)
+    app.register_blueprint(personal.bp)
 
     with app.app_context():
         # A fetch runs in a daemon thread, so anything still marked 'running'

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Bookmarks - Claim Review{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<h1>Bookmarks</h1>
+<p class="hint">
+  Claims you have set aside, grouped by the name you filed them under. These are yours alone -
+  nobody else sees them, and they are not part of a hypothesis's progress.
+  Bookmark a claim from its own page.
+</p>
+
+{% if not groups %}
+<p class="hint">
+  Nothing bookmarked yet. Open a claim and use <strong>Bookmark this claim</strong> to file it under
+  {{ ['Suspicious', 'Abuse', 'To be reviewed', 'Other']|join(', ') }}, or a name of your own.
+</p>
+{% else %}
+<p class="hint">{{ total }} bookmark{{ '' if total == 1 else 's' }} across
+  {{ groups|length }} name{{ '' if groups|length == 1 else 's' }}.</p>
+
+{% for group in groups %}
+<h2 style="margin-top:1.6rem; font-size:1.05rem;">
+  {{ group.label }} <span class="doc-group">({{ group.claims|length }})</span>
+</h2>
+<ul class="doc-list">
+  {% for claim in group.claims %}
+  <li>
+    <span class="doc-text">
+      {% if claim.available %}
+      <a class="doc-file-name" href="{{ url_for('claims.claim_detail', claim_id=claim.claim_id) }}">{{ claim.claim_id }}</a>
+      {% else %}
+      {#- The bundle is no longer in the active folder, so there is nothing to
+          open. Saying so beats a link that 404s. -#}
+      <span class="doc-file-name">{{ claim.claim_id }}</span>
+      <span class="doc-dir-path">not in the current folder</span>
+      {% endif %}
+      {% if claim.note %}<span class="doc-dir-path">{{ claim.note }}</span>{% endif %}
+      <span class="doc-dir-path">bookmarked {{ claim.created_at }}</span>
+    </span>
+    <span class="doc-tags">
+      <form method="post" action="{{ url_for('personal.remove_bookmark_form') }}" style="display:inline;">
+        <input type="hidden" name="claim_id" value="{{ claim.claim_id }}">
+        <input type="hidden" name="label" value="{{ group.label }}">
+        <button type="submit" class="btn-secondary">Remove</button>
+      </form>
+    </span>
+  </li>
+  {% endfor %}
+</ul>
+{% endfor %}
+{% endif %}
+{% endblock %}

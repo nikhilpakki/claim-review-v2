@@ -162,6 +162,30 @@ CREATE TABLE IF NOT EXISTS user_state (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A reviewer's own shortlist. Bookmarking is personal: one reviewer marking a
+-- claim "Suspicious" says nothing about anyone else's queue, so every row is
+-- owned by a user and nobody sees another's.
+--
+-- The label is stored on the row rather than in a separate table of names. A
+-- label exists exactly while some claim carries it, which is the behaviour that
+-- needs no upkeep: there is no orphaned-name list to prune, and a name typed
+-- once by mistake disappears with the bookmark. The four defaults are supplied
+-- by the application (bookmarks.DEFAULT_LABELS), not seeded here, so they are
+-- offered to everyone from the start without any rows existing.
+--
+-- UNIQUE(user_id, claim_id, label) makes bookmarking idempotent: pressing it
+-- twice under the same label is not two bookmarks.
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  claim_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, claim_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, label);
+
 -- A hypothesis is the question a review campaign is trying to answer: the
 -- claim population it concerns, and how many of those have to be reviewed for
 -- the answer to mean anything.

@@ -16,6 +16,8 @@
     {% endif %}
     <a class="change-root" href="{{ url_for('fetch.fetch_page') }}">Fetch claims</a>
     <a class="change-root" href="{{ url_for('hypothesis.view_hypotheses') }}">Hypotheses</a>
+    <a class="change-root" href="{{ url_for('personal.view_bookmarks') }}">Bookmarks</a>
+    <a class="change-root" href="{{ url_for('personal.view_reviews') }}">Reviews</a>
     <a class="change-root" href="{{ url_for('rules.view_rules') }}{{ here_qs }}">Rules</a>
     <a class="change-root" href="{{ url_for('settings.view_settings') }}{{ here_qs }}">&#9881; Settings</a>
     {% if current_user %}

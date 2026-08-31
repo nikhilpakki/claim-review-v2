@@ -4,6 +4,25 @@
 <a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
 <h1>Claim {{ claim_id }}</h1>
 
+{#- Personal shortlist. Sits at the top because it is something a reviewer
+    reaches for while working through a long list, not at the end of a review. -#}
+<div class="bookmark-bar" id="bookmark-bar">
+  <span class="bookmark-applied" id="bookmark-applied"></span>
+  <details id="bookmark-picker">
+    <summary class="btn-secondary">Bookmark this claim</summary>
+    <div class="bookmark-form">
+      <label for="bookmark-label">File it under</label>
+      <select id="bookmark-label"></select>
+      <label for="bookmark-new">or a new name</label>
+      <input type="text" id="bookmark-new" maxlength="60" placeholder="e.g. Duplicate implants">
+      <input type="text" id="bookmark-note" maxlength="200" placeholder="Note (optional)">
+      <button type="button" class="btn-secondary" id="bookmark-save">Save</button>
+      <span class="bookmark-error" id="bookmark-error"></span>
+    </div>
+  </details>
+  <a class="change-root" href="{{ url_for('personal.view_bookmarks') }}">All bookmarks</a>
+</div>
+
 <div class="claim-summary-panel">
   <h2 style="font-size:1rem; margin:0 0 0.4rem;">Claim summary</h2>
   <p class="settings-help" style="margin:0 0 0.5rem;">
@@ -271,7 +290,9 @@
   </div>
 
   <div class="preview-col" id="preview-col">
-    <p class="hint">Select a document, search result, or signature to preview it here.</p>
+    <p class="hint">Select a document, search result, or signature to preview it here.
+      Once a page is open, <kbd>&larr;</kbd>/<kbd>&rarr;</kbd> turn its pages and
+      <kbd>&uarr;</kbd>/<kbd>&darr;</kbd> move between documents.</p>
   </div>
 </div>
 
@@ -283,6 +304,7 @@
 <script src="{{ url_for('static', filename='js/preview.js') }}"></script>
 <script src="{{ url_for('static', filename='js/search.js') }}"></script>
 <script src="{{ url_for('static', filename='js/review.js') }}"></script>
+<script src="{{ url_for('static', filename='js/bookmark.js') }}"></script>
 <script>
 window.loadSignatures = function () {
   const el = document.getElementById('signature-list');

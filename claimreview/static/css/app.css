@@ -318,6 +318,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .sig-flags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
 .sig-flags a { color: inherit; text-decoration: underline; }
 
+/* ------------------------------------------------------------ bookmarks */
+
+.bookmark-bar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin: -0.4rem 0 1rem; }
+.bookmark-bar summary { cursor: pointer; display: inline-block; list-style: none; }
+.bookmark-bar summary::-webkit-details-marker { display: none; }
+.bookmark-form {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-top: 0.5rem; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
+}
+.bookmark-form label { font-size: 0.78rem; color: var(--muted); }
+.bookmark-form input[type="text"] { min-width: 12rem; }
+.bookmark-error { font-size: 0.78rem; color: var(--danger); }
+.tag-bookmark { background: var(--accent-soft); color: var(--accent-hover); }
+.tag-bookmark a { color: inherit; text-decoration: none; margin-left: 0.3rem; font-weight: 600; }
+
+/* The arrow-key hint in the empty preview pane. */
+kbd {
+  font-family: inherit; font-size: 0.72rem; padding: 0.05rem 0.3rem;
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 3px;
+  background: var(--panel); color: var(--muted-2);
+}
+
 /* ---------------------------------------------------------------- rules */
 
 .rule-item {
