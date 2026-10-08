@@ -162,6 +162,20 @@
   // "Page 3 / 10" the reviewer is reading.
   let current = null;
 
+  // Show which document is open, in the list, rather than leaving the reviewer
+  // to infer it from the focus ring the browser happens to have drawn.
+  function markCurrentDocument(docId) {
+    document.querySelectorAll('#tab-documents li[data-doc-id]').forEach((li) => {
+      const isCurrent = li.dataset.docId === docId;
+      li.classList.toggle('is-previewing', isCurrent);
+      if (isCurrent) {
+        // Arrowing past the visible part of a long list should bring the row
+        // with it; nearest avoids yanking the list when it is already visible.
+        li.scrollIntoView({ block: 'nearest' });
+      }
+    });
+  }
+
   function documentOrder() {
     // The documents tab, in the order the reviewer sees it. Taken from the DOM
     // rather than a separate list so up/down can never disagree with what is
@@ -220,6 +234,7 @@
           page: data.page_number,
           numPages: data.num_pages || 1,
         };
+        markCurrentDocument(docId);
         render(claimId, docId, data, highlight);
       });
   };

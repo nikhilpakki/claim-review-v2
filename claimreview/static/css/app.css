@@ -10,6 +10,11 @@
   --accent-hover: #1d4ed8;
   --accent-soft: #eef2ff;
   --danger: #dc2626;
+  /* Warm amber, for "you are looking at this one". Deliberately not the blue
+     accent, which already means "actionable link" everywhere else. */
+  --previewing-bg: #fdf5e6;
+  --previewing-edge: #d9a441;
+  --previewing-text: #8a5a00;
   --warn: #d97706;
   --ok: #16a34a;
   --highlight-kv: rgba(37, 99, 235, 0.9);
@@ -317,6 +322,26 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .sig-item:hover { border-color: var(--danger); }
 .sig-flags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
 .sig-flags a { color: inherit; text-decoration: underline; }
+
+.claims-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.claims-header h1 { margin-bottom: 0; }
+
+/* The document currently open in the preview. A warm, low-contrast wash plus a
+   bar down the leading edge: enough to find at a glance while arrowing through
+   a long list, not enough to compete with the quality tags on the same row. */
+.doc-list li.is-previewing {
+  background: var(--previewing-bg);
+  border-left: 3px solid var(--previewing-edge);
+  padding-left: calc(0.6rem - 3px);
+}
+.doc-list li.is-previewing .doc-file-name { color: var(--previewing-text); }
+
+/* Clicking a document used to leave the browser's focus rectangle sitting on
+   the row - a hard black box that read as the selection and then went stale as
+   the arrow keys moved on. :focus-visible keeps a ring for keyboard users, who
+   need it, and drops it for the mouse, where .is-previewing says it better. */
+.doc-open-link:focus { outline: none; }
+.doc-open-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ------------------------------------------------------------ bookmarks */
 
