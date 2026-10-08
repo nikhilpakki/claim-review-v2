@@ -162,6 +162,28 @@ CREATE TABLE IF NOT EXISTS user_state (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Content hashes of claim documents, so a restart does not mean re-reading
+-- every file in the folder.
+--
+-- The claims list hashes every document of every claim on each load, to decide
+-- whether its memoized rollup is still valid. That is cheap in CPU and
+-- expensive in I/O: profiled over 300 claims / 1,800 files, opening and reading
+-- them cost 5.5s while the SHA-256 itself cost 0.33s. An in-process memo
+-- already covered repeat loads, but it died with the process, so the first load
+-- after every deploy or restart paid the full cost again - about 50 seconds at
+-- 3,000 claims.
+--
+-- Keyed by path and validated against size and mtime: a real content change
+-- moves at least one of them. Claim bundles are written once by a fetch and not
+-- edited in place, so this is a safe trade - and the value stored is still the
+-- true content hash, so nothing downstream changes meaning.
+CREATE TABLE IF NOT EXISTS doc_hash_cache (
+  path TEXT PRIMARY KEY,
+  size INTEGER NOT NULL,
+  mtime_ns INTEGER NOT NULL,
+  file_hash TEXT NOT NULL
+);
+
 -- A reviewer's own shortlist. Bookmarking is personal: one reviewer marking a
 -- claim "Suspicious" says nothing about anyone else's queue, so every row is
 -- owned by a user and nobody sees another's.
@@ -445,3 +467,7 @@ def init_db(app):
         conn.commit()
         conn.close()
     app.teardown_appcontext(close_db)
+    # Hashes discovered during a request are written once at the end of it,
+    # rather than a commit per file.
+    from .cache_store import flush_hash_cache
+    app.teardown_appcontext(flush_hash_cache)

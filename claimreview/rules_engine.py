@@ -820,13 +820,15 @@ def _dedupe_by_hash(docs):
     return list(seen.values())
 
 
-def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None):
+def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None, rules=None):
     """Every enabled rule's live result for this claim. `docs` can be an
     already-scanned claim_scanner.scan_claim_cached() list, when the caller
     (e.g. the claims-list home page, which also needs it for quality
     rollups) already has one on hand - avoids each rule independently
     rescanning/rehashing every file in the claim. Likewise `settings`, when
-    the caller already fetched it."""
+    the caller already fetched it, and `rules`: the rule set is the same for
+    every claim on a page, so a caller looping over a folder should read it
+    once rather than re-query it (plus the user's overrides) per claim."""
     if docs is None:
         docs = claim_scanner.scan_claim_cached(claim_path)
     if settings is None:
@@ -848,7 +850,7 @@ def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None)
     }
     docs = _dedupe_by_hash(docs)
     results = []
-    for rule in list_rules(user_id):
+    for rule in (list_rules(user_id) if rules is None else rules):
         if not rule["enabled"]:
             continue
         applies, reason = _procedure_codes_match(claim_id, rule["config"], user_id)

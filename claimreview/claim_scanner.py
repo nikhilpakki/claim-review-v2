@@ -65,7 +65,18 @@ def scan_claim_hashed(claim_path):
 
 def attach_cached_results(docs):
     """Load each already-hashed doc's Textract result (None if not yet
-    processed). Split out from the scan so callers can skip it on a cache hit."""
+    processed). Split out from the scan so callers can skip it on a cache hit -
+    which is what keeps it off the claims list's normal path entirely.
+
+    Deliberately sequential. This is I/O rather than computation (reading 1,800
+    result files measured 4.1s, of which JSON parsing was 0.09s), so threads
+    look like the obvious answer, but measured they are not: one shared pool of
+    8 workers took 3.35s and a pool per claim 3.76s. The opens do not overlap -
+    on Windows they appear to serialise behind on-access scanning - so the
+    complexity buys under a fifth, and is not worth it. The way to make this
+    path fast is to not read the files at all, which is what the rollup cache
+    does.
+    """
     for doc in docs:
         doc["cached_result"] = cache_store.load_cached_result(doc["file_hash"])
     return docs
