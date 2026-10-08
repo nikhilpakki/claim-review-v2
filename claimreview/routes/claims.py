@@ -1,9 +1,12 @@
-from flask import (Blueprint, current_app, jsonify, redirect, render_template,
-                   request, url_for)
+import os
+from datetime import datetime
 
-from .. import (claim_amounts, claim_extract, claim_scanner, claim_sections, claim_summary,
-                classify, csv_data, processing, rollup_cache, root_state, rules_engine,
-                settings_store, textract_profile, users)
+from flask import (Blueprint, current_app, jsonify, redirect, render_template,
+                   request, stream_with_context, url_for)
+
+from .. import (claim_amounts, claim_export, claim_extract, claim_scanner, claim_sections,
+                claim_summary, classify, csv_data, processing, rollup_cache, root_state,
+                rules_engine, settings_store, textract_profile, users)
 from ..db import get_latest_runs
 from ..fetch import runs as fetch_runs
 
@@ -16,7 +19,7 @@ def _empty_rollup():
             "face_pages": 0, "rule_violations": 0}
 
 
-def _claim_rollup(claim_id, claim_path, docs, settings, user_id=None):
+def _claim_rollup(claim_id, claim_path, docs, settings, user_id=None, rules=None):
     """Live counts for the claims-list badges, computed fresh against
     *current* settings/rules from each already-cached, deduped document -
     not a processing_runs snapshot - so retuning a threshold or rule
@@ -55,7 +58,8 @@ def _claim_rollup(claim_id, claim_path, docs, settings, user_id=None):
 
     rollup["rule_violations"] = sum(
         1 for r in rules_engine.evaluate_rules(claim_id, claim_path, docs=docs,
-                                               settings=settings, user_id=user_id)
+                                               settings=settings, user_id=user_id,
+                                               rules=rules)
         if r["status"] == "fail")
     return rollup
 
@@ -112,6 +116,9 @@ def list_claims_view():
     global_fp = rollup_cache.global_fingerprint(settings, user_id)
     cached_rollups = rollup_cache.get_all(user_id)
     extract_versions = claim_extract.versions()
+    # The rule set is the same for every claim in the folder, so it is read once
+    # here instead of once per claim (two queries each, thousands of times over).
+    rules = rules_engine.list_rules(user_id)
     fresh = []
 
     for claim in claims:
@@ -126,7 +133,8 @@ def list_claims_view():
                 status["rollup"] = hit[1]
             else:
                 claim_scanner.attach_cached_results(docs)
-                rollup = _claim_rollup(claim_id, claim["path"], docs, settings, user_id)
+                rollup = _claim_rollup(claim_id, claim["path"], docs, settings, user_id,
+                                       rules=rules)
                 status["rollup"] = rollup
                 fresh.append((claim_id, key, rollup))
         else:
@@ -154,6 +162,36 @@ def list_claims_view():
                            settings=settings, fetch_run=fetch_run,
                            fetch_run_options=fetch_run_options,
                            selected_run_id=request.args.get("fetch_run") or "")
+
+
+@bp.route("/claims/export.csv")
+def export_claims_csv():
+    """Every fully processed claim in the active folder, as one CSV row each.
+
+    Streamed. A folder of a few thousand claims means re-reading every cached
+    document, which takes long enough that a buffered response would look like
+    a hung tab; streaming also keeps the whole file off the server's heap.
+    """
+    root = root_state.get_active_root()
+    if not root:
+        return redirect(url_for("browse.browse"))
+    settings = settings_store.get_settings()
+    user_id = users.current_user_id()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = os.path.basename(os.path.normpath(root)) or "claims"
+    filename = f"claim_report_{folder}_{stamp}.csv"
+
+    # stream_with_context, not a bare generator: the rows are produced *after*
+    # the view returns, by which time the application context - and with it the
+    # database connection every row needs - would otherwise have been torn down.
+    response = current_app.response_class(
+        stream_with_context(claim_export.stream_csv(root, settings, user_id)),
+        mimetype="text/csv")
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    # Nothing downstream can know the length up front, and a proxy buffering
+    # this to work one out would undo the streaming.
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 def _quality_summary(cached_result, settings):

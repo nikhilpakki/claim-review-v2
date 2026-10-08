@@ -1,8 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Claims - Claim Review{% endblock %}
 {% block content %}
-<h1>Claim bundles</h1>
-<p class="hint">{{ claims|length }} claim(s) found under <code>{{ active_root }}</code></p>
+<div class="claims-header">
+  <h1>Claim bundles</h1>
+  {#- Exports only the fully processed claims: a half-processed one would
+      export blank OCR columns that mean "not done yet" rather than "not
+      found", and a spreadsheet cannot tell those apart. -#}
+  <a class="btn btn-secondary" id="export-report"
+     href="{{ url_for('claims.export_claims_csv') }}"
+     title="Download a CSV of every fully processed claim in this folder: its warehouse columns, document and page counts, every rule's verdict, and what OCR read">Export report (CSV)</a>
+</div>
+<p class="hint">
+  {{ claims|length }} claim(s) found under <code>{{ active_root }}</code>
+  {%- set ready = claims|selectattr('status.status', 'equalto', 'completed')|list|length %}
+  &middot; {{ ready }} fully processed and included in the export
+</p>
 
 {% if fetch_run %}
 <div class="fetch-banner" id="fetch-run-banner" data-run-id="{{ fetch_run.run_id }}">
