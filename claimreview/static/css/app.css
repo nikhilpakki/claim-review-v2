@@ -119,8 +119,12 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 }
 .dir-list li, .doc-list li, .claim-list li { border-bottom: 1px solid var(--border); }
 .dir-list li:last-child, .doc-list li:last-child, .claim-list li:last-child { border-bottom: none; }
-.dir-list a { display: block; padding: 0.65rem 1rem; color: var(--text); text-decoration: none; font-size: 0.92rem; }
-.dir-list a:hover { background: var(--accent-soft); }
+/* The row-filling link a folder list is made of. :not(.btn-link) so an
+   explicit link-button inside such a list keeps its own styling - this rule is
+   a class plus an element and so outranks .btn-link, which left "Review" as a
+   padded block beside "Delete files" in the fetch history. */
+.dir-list a:not(.btn-link) { display: block; padding: 0.65rem 1rem; color: var(--text); text-decoration: none; font-size: 0.92rem; }
+.dir-list a:not(.btn-link):hover { background: var(--accent-soft); }
 .dir-list .empty, .doc-list .empty, .claim-list .empty { padding: 1rem; color: var(--muted); font-size: 0.9rem; }
 
 .select-root-bar { margin-top: 1.25rem; }
@@ -326,6 +330,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .claims-header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
 .claims-header h1 { margin-bottom: 0; }
 
+/* A <details> dropdown: no JavaScript, and it closes on Escape for free. */
+.dropdown { position: relative; }
+.dropdown > summary {
+  list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 0.45rem;
+}
+.dropdown > summary::-webkit-details-marker { display: none; }
+.dropdown[open] > summary .dropdown-caret { transform: rotate(180deg); }
+.dropdown-caret { font-size: 0.7em; transition: transform 0.15s; }
+.dropdown-menu {
+  position: absolute; right: 0; top: calc(100% + 0.3rem); z-index: 30; min-width: 15rem;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-md); overflow: hidden;
+}
+.dropdown-item {
+  display: block; padding: 0.6rem 0.9rem; color: var(--text); text-decoration: none;
+  font-size: 0.88rem; border-bottom: 1px solid var(--border);
+}
+.dropdown-item:last-child { border-bottom: none; }
+.dropdown-item:hover { background: var(--accent-soft); }
+.dropdown-item.is-disabled { color: var(--muted-2); cursor: not-allowed; }
+.dropdown-item.is-disabled:hover { background: none; }
+.dropdown-note { display: block; font-size: 0.76rem; color: var(--muted); margin-top: 0.1rem; }
+
 /* The document currently open in the preview. A warm, low-contrast wash plus a
    bar down the leading edge: enough to find at a glance while arrowing through
    a long list, not enough to compete with the quality tags on the same row. */
@@ -508,8 +535,20 @@ a.rule-ref:hover { text-decoration: none; border-bottom-style: solid; }
 .notice code { font-size: 0.82em; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
-.btn-link { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
-.btn-link:hover { text-decoration: underline; }
+/* A button that should read as a link. The base `button` rule above paints
+   every button with the solid accent background, and this used to override only
+   the colour - leaving accent-on-accent text, which is to say an invisible
+   label on a blue block. Anchors never hit that rule, so the same class looked
+   right as an <a> and wrong as a <button>; both are reset here so the two
+   always match. */
+.btn-link {
+  background: none; border: none; padding: 0;
+  color: var(--accent); text-decoration: none;
+  font-size: 0.85rem; font-weight: 500; line-height: inherit;
+  cursor: pointer; vertical-align: baseline;
+}
+.btn-link:hover { background: none; border-color: transparent; text-decoration: underline; }
+.btn-link:active { transform: none; }
 
 .settings-field textarea, .settings-field input[type="text"] {
   width: 100%; padding: 0.5rem 0.7rem; border: 1px solid var(--border-strong);

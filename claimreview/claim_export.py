@@ -154,20 +154,30 @@ def claim_row(claim, docs, settings, user_id, rules, rule_columns, claim_columns
     return row
 
 
-def iter_rows(root, settings, user_id=None, latest_runs=None):
-    """Yield (claim_id, row) for every fully processed claim under `root`.
+def iter_rows(root, settings, user_id=None, latest_runs=None, run_id=None):
+    """Yield (claim_id, row) for the fully processed claims under `root`.
+
+    `run_id` narrows the export to one fetch run - the batch a reviewer is
+    currently looking at - rather than everything the folder has accumulated.
+    A run's claims that are not in this folder are simply absent, the same way
+    the claims list treats them.
 
     A generator so the response can stream: a folder of a few thousand claims
     means re-reading every cached document, and a reviewer should see the file
     start arriving rather than watch a blank tab decide whether it has hung.
     """
     from .db import get_latest_runs
+    from .fetch import runs as fetch_runs
+
     latest_runs = get_latest_runs() if latest_runs is None else latest_runs
     rules = rules_engine.list_rules(user_id)
     columns, rule_columns, claim_columns = build_columns(user_id, rules)
+    wanted = set(fetch_runs.run_claim_ids(run_id)) if run_id else None
 
     for claim in claim_scanner.list_claims(root):
         claim_id = claim["claim_id"]
+        if wanted is not None and claim_id not in wanted:
+            continue
         status = processing.get_claim_status(claim_id, latest_runs.get(claim_id))
         if status["status"] not in EXPORTABLE_STATUSES:
             continue
@@ -176,7 +186,7 @@ def iter_rows(root, settings, user_id=None, latest_runs=None):
                                   rule_columns, claim_columns)
 
 
-def stream_csv(root, settings, user_id=None):
+def stream_csv(root, settings, user_id=None, run_id=None):
     """The whole CSV, a chunk at a time, header first."""
     columns, _rule_columns, _claim_columns = build_columns(user_id)
     buffer = io.StringIO()
@@ -190,6 +200,6 @@ def stream_csv(root, settings, user_id=None):
 
     writer.writeheader()
     yield take()
-    for _claim_id, row in iter_rows(root, settings, user_id):
+    for _claim_id, row in iter_rows(root, settings, user_id, run_id=run_id):
         writer.writerow(row)
         yield take()

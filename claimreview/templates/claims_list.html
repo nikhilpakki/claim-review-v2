@@ -5,10 +5,32 @@
   <h1>Claim bundles</h1>
   {#- Exports only the fully processed claims: a half-processed one would
       export blank OCR columns that mean "not done yet" rather than "not
-      found", and a spreadsheet cannot tell those apart. -#}
-  <a class="btn btn-secondary" id="export-report"
-     href="{{ url_for('claims.export_claims_csv') }}"
-     title="Download a CSV of every fully processed claim in this folder: its warehouse columns, document and page counts, every rule's verdict, and what OCR read">Export report (CSV)</a>
+      found", and a spreadsheet cannot tell those apart.
+
+      Two scopes, because a folder accumulates every fetch ever run into it:
+      the batch currently being looked at, and everything. -#}
+  <details class="dropdown" id="export-menu">
+    <summary class="btn">Export report <span class="dropdown-caret" aria-hidden="true">&#9662;</span></summary>
+    <div class="dropdown-menu">
+      {% if selected_run_id %}
+      <a class="dropdown-item"
+         href="{{ url_for('claims.export_claims_csv', fetch_run=selected_run_id) }}">
+        Export
+        <span class="dropdown-note">fetch {{ selected_run_id }} only</span>
+      </a>
+      {% else %}
+      <span class="dropdown-item is-disabled"
+            title="Pick a fetch ID in the filters below to export just that batch">
+        Export
+        <span class="dropdown-note">choose a fetch ID first</span>
+      </span>
+      {% endif %}
+      <a class="dropdown-item" href="{{ url_for('claims.export_claims_csv') }}">
+        Export all
+        <span class="dropdown-note">every processed claim in this folder</span>
+      </a>
+    </div>
+  </details>
 </div>
 <p class="hint">
   {{ claims|length }} claim(s) found under <code>{{ active_root }}</code>
