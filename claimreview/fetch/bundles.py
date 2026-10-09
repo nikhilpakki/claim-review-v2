@@ -43,6 +43,23 @@ def _safe_child(destination, claim_id):
     return candidate
 
 
+def _same_folder(destination):
+    """A test for "this other run downloaded into the same folder".
+
+    Compared with normcase and normpath, because the same folder reaches the
+    database spelled several ways - trailing separators, mixed case on Windows,
+    forward against backslashes.
+    """
+    target = os.path.normcase(os.path.normpath(destination))
+
+    def matches(other):
+        if not other:
+            return False
+        return os.path.normcase(os.path.normpath(other)) == target
+
+    return matches
+
+
 def delete_run_bundles(run_id):
     """Delete the claim folders this run downloaded. Returns
     {deleted, missing, bytes_freed, destination}."""
@@ -60,7 +77,25 @@ def delete_run_bundles(run_id):
     if not os.path.isdir(destination):
         raise BundleDeleteError(f"Destination folder no longer exists: {destination}")
 
-    claim_ids = runs.run_claim_ids(run_id)
+    # Only what this run actually put on disk. A run that selected a claim and
+    # found it already downloaded has it listed too, but those bytes belong to
+    # whichever run fetched them - deleting this run was removing other runs'
+    # claims out of the same folder, which is how reclaiming disk for one batch
+    # quietly took away another.
+    claim_ids = runs.run_downloaded_claim_ids(run_id)
+    skipped = [c for c in runs.run_claim_ids(run_id) if c not in set(claim_ids)]
+
+    # And of what it did download, leave anything a still-undeleted run also
+    # downloaded into the same folder: the two runs point at one set of files.
+    owners = runs.other_download_owners(run_id)
+    here = _same_folder(destination)
+    shared = {}
+    for claim_id in list(claim_ids):
+        also = [run for run, dest in owners.get(claim_id, []) if here(dest)]
+        if also:
+            shared[claim_id] = sorted(set(also))
+    claim_ids = [c for c in claim_ids if c not in shared]
+
     deleted = missing = bytes_freed = 0
     errors = []
 
@@ -83,10 +118,23 @@ def delete_run_bundles(run_id):
         rollup_cache.invalidate(claim_id)
 
     runs.mark_bundles_deleted(run_id)
+    # `kept` is reported rather than silently implied: a reviewer who presses
+    # Delete and frees less than they expected needs to know that the rest is
+    # another run's to remove, not that something failed.
+    kept = []
+    if skipped:
+        kept.append({"reason": "already on disk when this run selected them",
+                     "claims": sorted(skipped)})
+    if shared:
+        runs_named = sorted({run for names in shared.values() for run in names})
+        kept.append({"reason": "also downloaded by " + ", ".join(runs_named),
+                     "claims": sorted(shared)})
     return {
         "deleted": deleted,
         "missing": missing,
         "bytes_freed": bytes_freed,
         "destination": destination,
         "errors": errors,
+        "kept": kept,
+        "kept_count": len(skipped) + len(shared),
     }

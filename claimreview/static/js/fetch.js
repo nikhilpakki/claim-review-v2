@@ -300,6 +300,9 @@
       const ok = window.confirm(
         'Delete the downloaded files for run ' + runId + '?\n\n'
         + btn.dataset.claims + ' claim folder(s) under:\n' + btn.dataset.destination
+        + '\n\nOnly the claims this run actually downloaded are removed. '
+        + 'Any it found already on disk, or that another run also downloaded, are '
+        + 'left for that run to remove.'
         + '\n\nOCR results, review notes and rule history are kept - they are stored by '
         + 'document content, not by file path. Document previews for these claims will '
         + 'stop working until they are fetched again.');

@@ -160,6 +160,44 @@ def run_claim_ids(run_id, successful_only=False):
     return [row["registration_id"] for row in get_db().execute(query, params).fetchall()]
 
 
+# What the pipeline records for a claim it found already on disk and therefore
+# never fetched. Such a claim is still listed against the run that selected it -
+# which is honest, it was part of that selection - but the run did not put those
+# bytes there and must not take them away.
+SKIPPED_DOWNLOAD_STATUS = "already_downloaded"
+
+
+def run_downloaded_claim_ids(run_id):
+    """The claims this run actually downloaded, not merely selected."""
+    rows = get_db().execute(
+        "SELECT registration_id FROM fetch_run_claims "
+        "WHERE run_id=? AND COALESCE(download_status, '') <> ? "
+        "ORDER BY registration_id", (run_id, SKIPPED_DOWNLOAD_STATUS)).fetchall()
+    return [row["registration_id"] for row in rows]
+
+
+def other_download_owners(run_id):
+    """{registration_id: [(run_id, destination), ...]} for claims downloaded by
+    *other* runs that still have their files.
+
+    Used to refuse deleting a bundle a different run also put on disk. The
+    destination comes back with it so the caller can discount a run that
+    downloaded the same claim somewhere else entirely - the same registration
+    id in two folders is two different sets of files.
+    """
+    rows = get_db().execute(
+        "SELECT c.registration_id, c.run_id, r.destination "
+        "FROM fetch_run_claims c JOIN fetch_runs r ON r.run_id = c.run_id "
+        "WHERE c.run_id <> ? AND r.bundles_deleted_at IS NULL "
+        "  AND COALESCE(c.download_status, '') <> ?",
+        (run_id, SKIPPED_DOWNLOAD_STATUS)).fetchall()
+    owners = {}
+    for row in rows:
+        owners.setdefault(row["registration_id"], []).append(
+            (row["run_id"], row["destination"]))
+    return owners
+
+
 def claim_run_map():
     """{registration_id: {run_id, started_at, extraction_status, run_ids}} - the
     most recent run that fetched each claim, plus every run it appeared in.
