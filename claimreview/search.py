@@ -300,6 +300,63 @@ def search_keyword(documents, keyword, regex=False, case_insensitive=True, locat
     return {"best": hits[0], "matches": hits}
 
 
+def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
+    """Find any of `terms` inside the extracted text, tolerating OCR noise.
+
+    This exists because search_kvs answers a different question. It scores the
+    query against a *whole* field value, which is right when comparing a name
+    against a name, and wrong when looking for one word inside a sentence:
+    measured, "operative" against "inter-0perative findings" scores 48.5 that
+    way and 88.9 as a partial match. A rule asking whether a word appears needs
+    the second reading.
+
+    partial_ratio finds the best-matching run inside the value, so a garbled
+    letter costs a little and surrounding words cost nothing. Measured against
+    the threshold of 80, with the term "operative":
+
+        inter-0perative findings    88.9   found, a zero for an o
+        oprative note attached      94.1   found, a dropped letter
+        conservative management     77.8   not found
+        routine discharge summary   50.0   not found
+
+    It does match "cooperative" and "postoperative", which contain the word
+    outright - but so does the regex the terms were taken from, so this agrees
+    with the pattern rather than widening it.
+
+    Returns the same {'best', 'matches'} shape as the other searches.
+    """
+    if fuzzy_threshold is None:
+        fuzzy_threshold = settings_store.get_settings()["FUZZY_MATCH_THRESHOLD"]
+    locations = locations or {}
+    cleaned = [t for t in ((term or "").strip() for term in terms or []) if t]
+    empty = {"best": None, "matches": []}
+    if not cleaned or not documents:
+        return empty
+
+    hits = []
+    for file_name, kvs in documents.items():
+        for key, values in kvs.items():
+            for value in values:
+                for side, text in (("key", key), ("value", value)):
+                    normalized = _normalize_for_fuzzy((text or "").lower())
+                    if not normalized:
+                        continue
+                    for term in cleaned:
+                        score = fuzz.partial_ratio(
+                            _normalize_for_fuzzy(term.lower()), normalized)
+                        if score < fuzzy_threshold:
+                            continue
+                        loc = locations.get((file_name, key, value), {})
+                        hits.append({"file": file_name, "key": key, "value": value,
+                                     "matched_on": side, "method": "fuzzy term",
+                                     "term": term, "score": float(score), **loc})
+                        break
+    if not hits:
+        return empty
+    matches = sorted(hits, key=lambda h: h["score"], reverse=True)
+    return {"best": matches[0], "matches": matches}
+
+
 def _build_search_records(documents):
     records = []
     for file_name, kvs in documents.items():

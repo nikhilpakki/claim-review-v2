@@ -195,6 +195,62 @@ def _claim_procedure_codes(value):
 # preview opens at the start.
 
 
+# A regex rule asks for an exact shape, which OCR does not reliably produce: a
+# pattern like (operative|inter\-operative) misses "lnter-operative", or a
+# stray space inside the word, while a reviewer reading the page can see the
+# word is plainly there. So the plain words inside the pattern are also put
+# through the same tolerant search the per-claim search box uses - exact, then
+# fuzzy, then phonetic - and the rule passes on either.
+#
+# Only the literal words are taken. Everything that is regex syntax - classes,
+# quantifiers, anchors, alternation, groups - separates one word from the next
+# rather than being part of one.
+_REGEX_SYNTAX = re.compile(
+    r"\[(?:\\.|[^\]])*\]"                # a whole character class: [A-Z] is not a word
+    r"|\\[dswDSWbBAZnrtfv0-9]"           # shorthand classes, backreferences
+    r"|\\(?P<escaped>[^dswDSWbBAZnrtfv0-9])"  # an escaped literal: keep the character
+    r"|[|()\[\]{}^$*+?.]"                # the rest of the syntax
+)
+_TERM_SEPARATOR = "\x00"
+
+# Below this many characters a derived term is not worth searching for
+# tolerantly. Measured against the fuzzy threshold of 80: "bpm" matches "bp" at
+# 80 and "lscs" matches "lsc" at 85.7, so very short words report hits that are
+# not the word that was asked for. The regex still looks for them exactly.
+MIN_SEARCH_TERM = 3
+
+
+def literal_terms(pattern):
+    r"""The plain words inside a regex, for the tolerant search to look up.
+
+    (operative|inter\-operative)  -> ['operative', 'inter-operative']
+    \d+\s*bpm                     -> ['bpm']
+    baby|birth|\d+\.\d+\s*(kg|g)  -> ['baby', 'birth']   ('kg', 'g' are too short)
+
+    Returns [] for a pattern that is all syntax, which simply means the rule
+    behaves exactly as it did before.
+    """
+    def _replace(match):
+        # An escaped punctuation character belongs to the word it sits in: the
+        # \- in inter\-operative is a hyphen, not a separator.
+        escaped = match.group("escaped")
+        if escaped and not escaped.isspace():
+            return escaped
+        return _TERM_SEPARATOR
+
+    flattened = _REGEX_SYNTAX.sub(_replace, str(pattern or ""))
+    terms, seen = [], set()
+    for chunk in flattened.split(_TERM_SEPARATOR):
+        term = chunk.strip()
+        if len(term) < MIN_SEARCH_TERM or not any(c.isalnum() for c in term):
+            continue
+        if term.lower() in seen:
+            continue
+        seen.add(term.lower())
+        terms.append(term)
+    return terms
+
+
 def _ref(label, file_name=None, page=None, bbox=None):
     return {"label": label, "file": file_name, "page": page, "bbox": bbox}
 
@@ -412,14 +468,30 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         regex = bool(config.get("regex"))
         case_insensitive = config.get("case_insensitive", True)
         label = f"pattern '{keyword}'" if regex else f"'{keyword}'"
+        # A regex also searches for the plain words inside it, tolerantly, and
+        # the rule passes on either. Only for regex rules: a plain keyword is
+        # already matched literally and quietly loosening every one of those
+        # would change what existing rules mean. See literal_terms.
+        search_terms = literal_terms(keyword) if regex else []
+        if search_terms:
+            label += " (or " + ", ".join(repr(t) for t in search_terms) + " by search)"
 
         def run_search(subset, locations=None):
             try:
-                return search.search_keyword(subset, keyword, regex=regex,
-                                             case_insensitive=case_insensitive,
-                                             locations=locations)
+                found = search.search_keyword(subset, keyword, regex=regex,
+                                              case_insensitive=case_insensitive,
+                                              locations=locations)
             except search.InvalidKeywordPattern as exc:
                 raise ValueError(f"Invalid regex pattern: {exc}") from exc
+            if found["best"] is not None:
+                return found
+            # The pattern did not match. Look for the words it is made of,
+            # tolerantly, so OCR noise in a word the reviewer can plainly see
+            # does not read as absent. The hit records that it was found this
+            # way, so a tolerant match is never mistaken for a pattern match on
+            # the claim page.
+            hit = search.search_terms(subset, search_terms, locations=locations)
+            return hit if hit["best"] is not None else found
 
     doc_page_hits = {}
     any_cached = False

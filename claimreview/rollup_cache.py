@@ -43,7 +43,11 @@ from .db import get_db
 #    procedure_code list instead of comparing the whole string, so rules scoped
 #    to a code start applying to multi-code claims they used to skip. The rules
 #    table is unchanged, so this is the only input that notices.
-ROLLUP_VERSION = 3
+#
+# 4: a regex rule now also searches for the plain words inside its pattern,
+#    tolerantly, so rules that were failing on OCR noise start passing. The
+#    rules table is unchanged, so nothing else in the key would notice.
+ROLLUP_VERSION = 4
 
 
 def _digest(*parts):
