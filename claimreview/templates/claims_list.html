@@ -9,33 +9,34 @@
 
       Two scopes, because a folder accumulates every fetch ever run into it:
       the batch currently being looked at, and everything. -#}
-  <details class="dropdown" id="export-menu">
-    <summary class="btn">Export report <span class="dropdown-caret" aria-hidden="true">&#9662;</span></summary>
-    <div class="dropdown-menu">
-      {% if selected_run_id %}
-      <a class="dropdown-item"
-         href="{{ url_for('claims.export_claims_csv', fetch_run=selected_run_id) }}">
-        Export
-        <span class="dropdown-note">fetch {{ selected_run_id }} only</span>
-      </a>
-      {% else %}
-      <span class="dropdown-item is-disabled"
-            title="Pick a fetch ID in the filters below to export just that batch">
-        Export
-        <span class="dropdown-note">choose a fetch ID first</span>
-      </span>
-      {% endif %}
-      <a class="dropdown-item" href="{{ url_for('claims.export_claims_csv') }}">
-        Export all
-        <span class="dropdown-note">every processed claim in this folder</span>
-      </a>
-    </div>
-  </details>
+  {#- The first item follows whatever is currently narrowing the page - ticked
+      rows, else the chosen fetch ID - and is kept in step by claims_list.js as
+      those change. It has to be a form, not a link: a selection can run to
+      thousands of ids, which no query string will carry. -#}
+  <form method="post" action="{{ url_for('claims.export_claims_csv') }}" id="export-form">
+    <input type="hidden" name="fetch_run" id="export-run-id" value="">
+    <input type="hidden" name="claim_ids" id="export-claim-ids" value="">
+    <details class="dropdown" id="export-menu">
+      <summary class="btn">Export report <span class="dropdown-caret" aria-hidden="true">&#9662;</span></summary>
+      <div class="dropdown-menu">
+        <button type="submit" class="dropdown-item" id="export-scoped" disabled>
+          Export
+          <span class="dropdown-note" id="export-scoped-note">choose a fetch ID or tick some claims</span>
+        </button>
+        <a class="dropdown-item" href="{{ url_for('claims.export_claims_csv') }}">
+          Export all
+          <span class="dropdown-note">every processed claim in this folder</span>
+        </a>
+      </div>
+    </details>
+  </form>
 </div>
+{%- set ready = claims|selectattr('status.status', 'equalto', 'completed')|list|length %}
 <p class="hint">
-  {{ claims|length }} claim(s) found under <code>{{ active_root }}</code>
-  {%- set ready = claims|selectattr('status.status', 'equalto', 'completed')|list|length %}
-  &middot; {{ ready }} fully processed and included in the export
+  <span id="claim-count-summary"
+        data-total="{{ claims|length }}" data-ready="{{ ready }}">{{ claims|length }} claim(s)</span>
+  found under <code>{{ active_root }}</code>
+  &middot; <span id="claim-ready-summary">{{ ready }}</span> fully processed and exportable
 </p>
 
 {% if fetch_run %}

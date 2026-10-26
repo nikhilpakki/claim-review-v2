@@ -164,13 +164,15 @@ def list_claims_view():
                            selected_run_id=request.args.get("fetch_run") or "")
 
 
-@bp.route("/claims/export.csv")
+@bp.route("/claims/export.csv", methods=["GET", "POST"])
 def export_claims_csv():
     """The fully processed claims in the active folder, as one CSV row each.
 
-    `?fetch_run=<id>` narrows it to that batch; without it, the whole folder. A
-    folder accumulates every fetch ever run into it, so exporting all of it is
-    rarely what somebody reviewing today's batch wants.
+    Three scopes, narrowest first: `claim_ids` (the rows ticked on the page,
+    POSTed because there can be thousands of them), `fetch_run` (one batch), or
+    neither, meaning the whole folder. A folder accumulates every fetch ever run
+    into it, so exporting all of it is rarely what somebody reviewing today's
+    batch wants.
 
     Streamed. A folder of a few thousand claims means re-reading every cached
     document, which takes long enough that a buffered response would look like
@@ -181,18 +183,29 @@ def export_claims_csv():
         return redirect(url_for("browse.browse"))
     settings = settings_store.get_settings()
     user_id = users.current_user_id()
-    run_id = request.args.get("fetch_run") or None
+    run_id = request.values.get("fetch_run") or None
+    # Ticked rows arrive by POST: a folder can hold thousands of claims and a
+    # query string cannot carry that many ids.
+    claim_ids = [c for c in (request.form.get("claim_ids") or "").split(",") if c.strip()]
+    claim_ids = [c.strip() for c in claim_ids] or None
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # The name carries the scope: the two files are easy to confuse once they
-    # are both sitting in a downloads folder.
-    scope = run_id if run_id else (os.path.basename(os.path.normpath(root)) or "claims")
+    # The name carries the scope: these files are easy to confuse once several
+    # are sitting in a downloads folder.
+    if claim_ids:
+        scope = f"selection_{len(claim_ids)}"
+    elif run_id:
+        scope = run_id
+    else:
+        scope = os.path.basename(os.path.normpath(root)) or "claims"
     filename = f"claim_report_{scope}_{stamp}.csv"
 
     # stream_with_context, not a bare generator: the rows are produced *after*
     # the view returns, by which time the application context - and with it the
     # database connection every row needs - would otherwise have been torn down.
     response = current_app.response_class(
-        stream_with_context(claim_export.stream_csv(root, settings, user_id, run_id=run_id)),
+        stream_with_context(claim_export.stream_csv(root, settings, user_id, run_id=run_id,
+                                                    claim_ids=claim_ids)),
         mimetype="text/csv")
     response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     # Nothing downstream can know the length up front, and a proxy buffering

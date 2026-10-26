@@ -154,13 +154,13 @@ def claim_row(claim, docs, settings, user_id, rules, rule_columns, claim_columns
     return row
 
 
-def iter_rows(root, settings, user_id=None, latest_runs=None, run_id=None):
+def iter_rows(root, settings, user_id=None, latest_runs=None, run_id=None, claim_ids=None):
     """Yield (claim_id, row) for the fully processed claims under `root`.
 
-    `run_id` narrows the export to one fetch run - the batch a reviewer is
-    currently looking at - rather than everything the folder has accumulated.
-    A run's claims that are not in this folder are simply absent, the same way
-    the claims list treats them.
+    `claim_ids` narrows it to an explicit set - the rows a reviewer has ticked -
+    and wins over `run_id`, which narrows it to one fetch run. Either way the
+    folder is still the source: an id that is not in it is absent, the same way
+    the claims list treats it.
 
     A generator so the response can stream: a folder of a few thousand claims
     means re-reading every cached document, and a reviewer should see the file
@@ -172,7 +172,12 @@ def iter_rows(root, settings, user_id=None, latest_runs=None, run_id=None):
     latest_runs = get_latest_runs() if latest_runs is None else latest_runs
     rules = rules_engine.list_rules(user_id)
     columns, rule_columns, claim_columns = build_columns(user_id, rules)
-    wanted = set(fetch_runs.run_claim_ids(run_id)) if run_id else None
+    if claim_ids:
+        wanted = {str(c) for c in claim_ids}
+    elif run_id:
+        wanted = set(fetch_runs.run_claim_ids(run_id))
+    else:
+        wanted = None
 
     for claim in claim_scanner.list_claims(root):
         claim_id = claim["claim_id"]
@@ -186,7 +191,7 @@ def iter_rows(root, settings, user_id=None, latest_runs=None, run_id=None):
                                   rule_columns, claim_columns)
 
 
-def stream_csv(root, settings, user_id=None, run_id=None):
+def stream_csv(root, settings, user_id=None, run_id=None, claim_ids=None):
     """The whole CSV, a chunk at a time, header first."""
     columns, _rule_columns, _claim_columns = build_columns(user_id)
     buffer = io.StringIO()
@@ -200,6 +205,7 @@ def stream_csv(root, settings, user_id=None, run_id=None):
 
     writer.writeheader()
     yield take()
-    for _claim_id, row in iter_rows(root, settings, user_id, run_id=run_id):
+    for _claim_id, row in iter_rows(root, settings, user_id, run_id=run_id,
+                                    claim_ids=claim_ids):
         writer.writerow(row)
         yield take()

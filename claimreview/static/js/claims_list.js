@@ -14,22 +14,59 @@
   // Run id selected in the "All fetches" dropdown, or '' for no run filter.
   let runFilter = '';
 
+  // The rows, read once. querySelectorAll on every keystroke across a folder of
+  // a few thousand claims was a measurable part of the lag, and the set does
+  // not change while the page is open.
+  const rows = Array.from(list.querySelectorAll('li[data-claim-id]'));
+  // Each row's run ids, split once rather than on every pass.
+  rows.forEach((li) => {
+    li._runIds = (li.dataset.runIds || '').split(' ').filter(Boolean);
+    li._claimIdLower = li.dataset.claimId.toLowerCase();
+  });
+
+  let visibleRows = rows.slice();
+
   function applyFilter() {
     const text = textInput.value.trim().toLowerCase();
-    let visibleCount = 0;
-    list.querySelectorAll('li[data-claim-id]').forEach((li) => {
-      const matchesStatus = activeStatus === 'all' || li.dataset.status === activeStatus;
-      const matchesText = !text || li.dataset.claimId.toLowerCase().includes(text);
-      const matchesTags = Array.from(activeTags).every((tag) => li.dataset[tag] === '1');
-      const matchesFetchRun = !fetchRunOnly || li.dataset.fetchRun === '1';
-      // A claim can belong to several runs; selecting any of them shows it.
-      const matchesRun = !runFilter
-        || (li.dataset.runIds || '').split(' ').includes(runFilter);
-      const visible = matchesStatus && matchesText && matchesTags && matchesFetchRun && matchesRun;
-      li.style.display = visible ? '' : 'none';
-      if (visible) visibleCount += 1;
-    });
-    emptyMsg.style.display = visibleCount === 0 ? '' : 'none';
+    const tags = Array.from(activeTags);
+    const visible = [];
+    let readyCount = 0;
+    for (const li of rows) {
+      const show = (activeStatus === 'all' || li.dataset.status === activeStatus)
+        && (!text || li._claimIdLower.includes(text))
+        && tags.every((tag) => li.dataset[tag] === '1')
+        && (!fetchRunOnly || li.dataset.fetchRun === '1')
+        // A claim can belong to several runs; selecting any of them shows it.
+        && (!runFilter || li._runIds.includes(runFilter));
+      // Only touch the DOM when the answer actually changed: assigning the
+      // same display value to thousands of nodes still costs a style
+      // recalculation, and most rows do not change between passes.
+      const hidden = li.style.display === 'none';
+      if (show === hidden) li.style.display = show ? '' : 'none';
+      if (show) {
+        visible.push(li);
+        if (li.dataset.status === 'completed') readyCount += 1;
+      }
+    }
+    visibleRows = visible;
+    emptyMsg.style.display = visible.length === 0 ? '' : 'none';
+    updateCounts(visible.length, readyCount);
+    updateBatchUI();
+  }
+
+  // The header counts are rendered for the whole folder; once a filter hides
+  // most of it they described a page nobody was looking at, which is what made
+  // filtering feel like it had not taken effect.
+  const countSummary = document.getElementById('claim-count-summary');
+  const readySummary = document.getElementById('claim-ready-summary');
+
+  function updateCounts(visibleCount, readyCount) {
+    if (!countSummary) return;
+    const total = Number(countSummary.dataset.total || 0);
+    countSummary.textContent = visibleCount === total
+      ? `${total} claim(s)`
+      : `${visibleCount} of ${total} claim(s)`;
+    if (readySummary) readySummary.textContent = readyCount;
   }
 
   statusBar.querySelectorAll('.filter-btn').forEach((btn) => {
@@ -57,7 +94,13 @@
     });
   }
 
-  textInput.addEventListener('input', applyFilter);
+  // Coalesce keystrokes: a filter pass over a few thousand rows per character
+  // is what the typing lag was.
+  let typingTimer = null;
+  textInput.addEventListener('input', () => {
+    clearTimeout(typingTimer);
+    typingTimer = setTimeout(applyFilter, 90);
+  });
 
   // ------------------------------------------------------------ batch select/process
 
@@ -74,10 +117,38 @@
     return checkboxes().filter((cb) => cb.checked).map((cb) => cb.value);
   }
 
+  // The Export menu's first item follows whatever is narrowing the page. It
+  // used to read a server-rendered ?fetch_run=, which the dropdown never sets -
+  // the filtering is client-side - so picking a fetch left it disabled.
+  const exportForm = document.getElementById('export-form');
+  const exportBtn = document.getElementById('export-scoped');
+  const exportNote = document.getElementById('export-scoped-note');
+  const exportRunInput = document.getElementById('export-run-id');
+  const exportIdsInput = document.getElementById('export-claim-ids');
+
+  function updateExportScope(selected) {
+    if (!exportBtn) return;
+    if (selected.length) {
+      // A ticked selection is the most specific thing on screen, so it wins.
+      exportIdsInput.value = selected.join(',');
+      exportRunInput.value = '';
+      exportBtn.disabled = false;
+      exportNote.textContent = `${selected.length} selected claim${selected.length === 1 ? '' : 's'}`;
+      return;
+    }
+    exportIdsInput.value = '';
+    exportRunInput.value = runFilter || '';
+    exportBtn.disabled = !runFilter;
+    exportNote.textContent = runFilter
+      ? `fetch ${runFilter} only`
+      : 'choose a fetch ID or tick some claims';
+  }
+
   function updateBatchUI() {
-    const n = selectedIds().length;
-    countEl.textContent = `${n} selected`;
-    processBtn.disabled = n === 0;
+    const selected = selectedIds();
+    countEl.textContent = `${selected.length} selected`;
+    processBtn.disabled = selected.length === 0;
+    updateExportScope(selected);
   }
 
   checkboxes().forEach((cb) => cb.addEventListener('change', updateBatchUI));
@@ -93,6 +164,12 @@
     runSelect.addEventListener('change', () => {
       runFilter = runSelect.value || '';
       applyFilter();
+      // Keep the address bar in step, so a reload, a bookmark or a shared link
+      // lands on the same batch rather than silently on the whole folder.
+      const url = new URL(window.location.href);
+      if (runFilter) url.searchParams.set('fetch_run', runFilter);
+      else url.searchParams.delete('fetch_run');
+      window.history.replaceState({}, '', url);
     });
   }
 
@@ -108,9 +185,9 @@
 
   if (selectAllCheckbox) {
     selectAllCheckbox.addEventListener('change', () => {
-      checkboxes().forEach((cb) => {
-        const li = cb.closest('li');
-        if (li.style.display !== 'none') cb.checked = selectAllCheckbox.checked;
+      visibleRows.forEach((li) => {
+        const cb = li.querySelector('.claim-checkbox');
+        if (cb) cb.checked = selectAllCheckbox.checked;
       });
       updateBatchUI();
     });
