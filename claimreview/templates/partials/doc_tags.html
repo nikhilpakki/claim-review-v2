@@ -40,12 +40,13 @@
              value="{{ t.pattern if t else '' }}"
              placeholder="e.g. (final bill|bill of supply|invoice)">
       <p class="settings-help">
-        A regular expression, matched against the page's extracted text - the same text a keyword
-        rule searches: form fields, query answers, table cells and section text. A page matching it
-        carries this tag.
-        {#- Worth saying plainly: unlike a keyword rule, this is the pattern and nothing else. -#}
-        <br>Matched as written. Unlike a rule's keyword, a tag does not also search for the words
-        inside the pattern, because a tag decides which pages a rule reads at all.
+        A regular expression, matched the same way a rule's regex keyword is matched, over the same
+        extracted text: form fields, query answers, table cells and section text, each field on its
+        own, so <code>^</code> and <code>$</code> mean the start and end of a value.
+        {#- The tolerant stage is the whole reason a tag finds real, OCR'd pages. -#}
+        <br>If the pattern itself does not match, the plain words inside it are looked up
+        tolerantly, so OCR noise in a word that is plainly on the page - <code>FlNAL BILL</code> -
+        still carries the tag. Words under 3 characters are matched exactly only.
       </p>
     </div>
 
@@ -76,6 +77,7 @@
       {% if tag.description %}<span class="doc-dir-path">{{ tag.description }}</span>{% endif %}
       <span class="doc-dir-path">
         <code>{{ tag.pattern }}</code>
+        {%- if tag.terms %} &middot; or {{ tag.terms|join(', ') }} by search{% endif %}
         &middot; {{ 'case sensitive' if tag.case_sensitive else 'case insensitive' }}
         {%- if tag.created_by %} &middot; by {{ tag.created_by }}{% endif %}
       </span>

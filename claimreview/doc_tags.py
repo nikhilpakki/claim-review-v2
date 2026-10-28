@@ -1,9 +1,15 @@
 """Admin-defined page tags, on top of the four built-in ones.
 
 A tag is a name and a regex. A page carries the tag when the pattern is found
-in that page's extracted text - the same text a keyword rule searches - which
-is what lets a rule be scoped to, say, only the bills in a claim rather than to
-every document in it.
+in that page's extracted text, which is what lets a rule be scoped to, say,
+only the bills in a claim rather than to every document in it.
+
+Found means exactly what it means for a rule's regex keyword: the same text,
+the same per-field matching, and the same tolerant second look at the plain
+words inside the pattern when the pattern itself does not match. The two share
+search.literal_terms and search._pattern_hits so they cannot drift - a pattern
+that finds a page as a rule has to find it as a tag, or an admin would be
+writing the same regex twice and getting two answers.
 
 Tags are central and global, like the rules they scope. A tag that meant
 different things to different reviewers would make two people's badges disagree
@@ -52,7 +58,7 @@ def list_tags():
     """Every tag, by name. Ordered so the rule form's checkboxes do not move
     around as tags are added."""
     rows = get_db().execute("SELECT * FROM doc_tags ORDER BY name COLLATE NOCASE").fetchall()
-    return [dict(row) for row in rows]
+    return [dict(row, terms=search.literal_terms(row["pattern"])) for row in rows]
 
 
 def get_tag(tag_id):
@@ -173,36 +179,58 @@ def rules_using(name):
 # ------------------------------------------------------------------- match
 
 def compiled(tags=None):
-    """[(name, compiled_pattern)] - compiled once per evaluation rather than
-    once per page, since a claim can run to hundreds of pages."""
+    """[(name, compiled_pattern, terms)] - prepared once per evaluation rather
+    than once per page, since a claim can run to hundreds of pages.
+
+    The terms travel with the pattern so a tag is matched exactly the way a
+    rule's regex keyword is: the pattern first, then the plain words inside it,
+    tolerantly. See search.literal_terms, which both of them call.
+    """
     out = []
     for tag in (list_tags() if tags is None else tags):
         flags = 0 if tag["case_sensitive"] else re.IGNORECASE
         try:
-            out.append((tag["name"], re.compile(tag["pattern"], flags)))
+            pattern = re.compile(tag["pattern"], flags)
         except re.error:
             # Saved patterns are validated, but a row edited by hand should not
             # take the claims page down with it.
             current_app.logger.warning("doc tag %r has an invalid pattern", tag["name"])
+            continue
+        out.append((tag["name"], pattern, search.literal_terms(tag["pattern"])))
     return out
 
 
 def tags_for_page(page, patterns):
     """The custom tags a page carries.
 
-    Matched against the same extracted text a keyword rule searches - form
-    keys and values, query answers, table cells and LAYOUT section text - so a
-    tag finds what a reviewer reading the page would.
+    Matched exactly as a rule's regex keyword is matched, over the same
+    extracted text - form keys and values, query answers, table cells and
+    LAYOUT section lines - and in the same two stages:
+
+      1. the pattern, against each field on its own. Not against the page's
+         text joined together: joined, ^ and $ mean the start and end of the
+         whole page, so a tag written ^(final bill|invoice) could only ever
+         match the page's first field, and a pattern could run across two
+         unrelated fields that happen to be adjacent.
+      2. failing that, the plain words inside the pattern, tolerantly, so
+         "FlNAL BILL" - which a reviewer reads without noticing - still
+         carries the bill tag.
+
+    Stage 2 compares lower-cased text, so a case-sensitive tag's pattern is
+    respected but its fallback is not. That is what a rule's regex keyword
+    already does, and a tag that behaved differently from the same pattern
+    written as a rule is the thing this is here to prevent.
     """
     if not patterns:
         return set()
     kvs = search.page_kv_dict(page)
     if not kvs:
         return set()
-    haystack = []
-    for key, values in kvs.items():
-        if key:
-            haystack.append(key)
-        haystack.extend(v for v in values if v)
-    text = "\n".join(haystack)
-    return {name for name, pattern in patterns if pattern.search(text)}
+    documents = {"page": kvs}
+    found = set()
+    for name, pattern, terms in patterns:
+        if search.matches_pattern(documents, pattern):
+            found.add(name)
+        elif terms and search.search_terms(documents, terms)["best"] is not None:
+            found.add(name)
+    return found

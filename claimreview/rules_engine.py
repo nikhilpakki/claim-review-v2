@@ -196,60 +196,11 @@ def _claim_procedure_codes(value):
 # preview opens at the start.
 
 
-# A regex rule asks for an exact shape, which OCR does not reliably produce: a
-# pattern like (operative|inter\-operative) misses "lnter-operative", or a
-# stray space inside the word, while a reviewer reading the page can see the
-# word is plainly there. So the plain words inside the pattern are also put
-# through the same tolerant search the per-claim search box uses - exact, then
-# fuzzy, then phonetic - and the rule passes on either.
-#
-# Only the literal words are taken. Everything that is regex syntax - classes,
-# quantifiers, anchors, alternation, groups - separates one word from the next
-# rather than being part of one.
-_REGEX_SYNTAX = re.compile(
-    r"\[(?:\\.|[^\]])*\]"                # a whole character class: [A-Z] is not a word
-    r"|\\[dswDSWbBAZnrtfv0-9]"           # shorthand classes, backreferences
-    r"|\\(?P<escaped>[^dswDSWbBAZnrtfv0-9])"  # an escaped literal: keep the character
-    r"|[|()\[\]{}^$*+?.]"                # the rest of the syntax
-)
-_TERM_SEPARATOR = "\x00"
-
-# Below this many characters a derived term is not worth searching for
-# tolerantly. Measured against the fuzzy threshold of 80: "bpm" matches "bp" at
-# 80 and "lscs" matches "lsc" at 85.7, so very short words report hits that are
-# not the word that was asked for. The regex still looks for them exactly.
-MIN_SEARCH_TERM = 3
-
-
-def literal_terms(pattern):
-    r"""The plain words inside a regex, for the tolerant search to look up.
-
-    (operative|inter\-operative)  -> ['operative', 'inter-operative']
-    \d+\s*bpm                     -> ['bpm']
-    baby|birth|\d+\.\d+\s*(kg|g)  -> ['baby', 'birth']   ('kg', 'g' are too short)
-
-    Returns [] for a pattern that is all syntax, which simply means the rule
-    behaves exactly as it did before.
-    """
-    def _replace(match):
-        # An escaped punctuation character belongs to the word it sits in: the
-        # \- in inter\-operative is a hyphen, not a separator.
-        escaped = match.group("escaped")
-        if escaped and not escaped.isspace():
-            return escaped
-        return _TERM_SEPARATOR
-
-    flattened = _REGEX_SYNTAX.sub(_replace, str(pattern or ""))
-    terms, seen = [], set()
-    for chunk in flattened.split(_TERM_SEPARATOR):
-        term = chunk.strip()
-        if len(term) < MIN_SEARCH_TERM or not any(c.isalnum() for c in term):
-            continue
-        if term.lower() in seen:
-            continue
-        seen.add(term.lower())
-        terms.append(term)
-    return terms
+# What a regex pattern means - the pattern itself, and the plain words
+# inside it for the tolerant stage - is shared with document tags, so the
+# two cannot drift apart. See search.literal_terms.
+literal_terms = search.literal_terms
+MIN_SEARCH_TERM = search.MIN_SEARCH_TERM
 
 
 def _ref(label, file_name=None, page=None, bbox=None):

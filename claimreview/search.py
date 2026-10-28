@@ -286,18 +286,102 @@ def search_keyword(documents, keyword, regex=False, case_insensitive=True, locat
                 "matched_on": rec["matched_on"], "method": "regex" if regex else "keyword",
                 "score": 100.0, **loc}
 
-    hits = []
-    for file_name, kvs in documents.items():
-        for key, values in kvs.items():
-            for value in values:
-                if key and pattern.search(key):
-                    hits.append(_hit({"file": file_name, "key": key, "value": value, "matched_on": "key"}))
-                if value and pattern.search(value):
-                    hits.append(_hit({"file": file_name, "key": key, "value": value, "matched_on": "value"}))
+    hits = [_hit({"file": file_name, "key": key, "value": value, "matched_on": side})
+            for file_name, key, value, side in _pattern_hits(documents, pattern)]
 
     if not hits:
         return empty
     return {"best": hits[0], "matches": hits}
+
+
+# A regex asks for an exact shape, which OCR does not reliably produce: a
+# pattern like (operative|inter\-operative) misses "lnter-operative", or a
+# stray space inside the word, while a reviewer reading the page can plainly
+# see the word is there. So the plain words inside the pattern are also put
+# through the tolerant search below, and the caller counts either as found.
+#
+# This lives here, rather than with the rules, because two different things
+# ask what a pattern means: a rule's regex keyword and a document tag's
+# pattern. If they disagreed, the same pattern would find a page when typed
+# into a rule and not find it when typed into a tag.
+#
+# Only the literal words are taken. Everything that is regex syntax - classes,
+# quantifiers, anchors, alternation, groups - separates one word from the next
+# rather than being part of one.
+_REGEX_SYNTAX = re.compile(
+    r"\[(?:\\.|[^\]])*\]"                # a whole character class: [A-Z] is not a word
+    r"|\\[dswDSWbBAZnrtfv0-9]"           # shorthand classes, backreferences
+    r"|\\(?P<escaped>[^dswDSWbBAZnrtfv0-9])"  # an escaped literal: keep the character
+    r"|[|()\[\]{}^$*+?.]"                # the rest of the syntax
+)
+_TERM_SEPARATOR = "\x00"
+
+# Below this many characters a derived term is not worth searching for
+# tolerantly. Measured against the fuzzy threshold of 80: "bpm" matches "bp" at
+# 80 and "lscs" matches "lsc" at 85.7, so very short words report hits that are
+# not the word that was asked for. The regex still looks for them exactly.
+MIN_SEARCH_TERM = 3
+
+
+def literal_terms(pattern):
+    r"""The plain words inside a regex, for the tolerant search to look up.
+
+    (operative|inter\-operative)  -> ['operative', 'inter-operative']
+    \d+\s*bpm                     -> ['bpm']
+    baby|birth|\d+\.\d+\s*(kg|g)  -> ['baby', 'birth']   ('kg', 'g' are too short)
+
+    Returns [] for a pattern that is all syntax, which simply means the caller
+    behaves exactly as it did before there was a tolerant stage at all.
+    """
+    def _replace(match):
+        # An escaped punctuation character belongs to the word it sits in: the
+        # \- in inter\-operative is a hyphen, not a separator.
+        escaped = match.group("escaped")
+        if escaped and not escaped.isspace():
+            return escaped
+        return _TERM_SEPARATOR
+
+    flattened = _REGEX_SYNTAX.sub(_replace, str(pattern or ""))
+    terms, seen = [], set()
+    for chunk in flattened.split(_TERM_SEPARATOR):
+        term = chunk.strip()
+        if len(term) < MIN_SEARCH_TERM or not any(c.isalnum() for c in term):
+            continue
+        if term.lower() in seen:
+            continue
+        seen.add(term.lower())
+        terms.append(term)
+    return terms
+
+
+def _pattern_hits(documents, pattern):
+    """(file, key, value, matched_on) for every extracted field `pattern` is
+    found in.
+
+    The unit of matching is one field, not the page's text joined together:
+    ^ and $ then mean the start and end of a value, which is what someone
+    writing ^(final bill|invoice) intends, and a pattern cannot accidentally
+    span two unrelated fields that happen to sit next to each other.
+    """
+    for file_name, kvs in documents.items():
+        for key, values in kvs.items():
+            for value in values:
+                if key and pattern.search(key):
+                    yield file_name, key, value, "key"
+                if value and pattern.search(value):
+                    yield file_name, key, value, "value"
+
+
+def matches_pattern(documents, pattern):
+    """Whether an already-compiled `pattern` is found anywhere in `documents`.
+
+    The same matching as search_keyword(regex=True), short-circuited and
+    without building hits: a document tag only needs to know whether the page
+    carries it, and asks once per tag per page.
+    """
+    for _ in _pattern_hits(documents, pattern):
+        return True
+    return False
 
 
 def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
@@ -333,6 +417,11 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
     if not cleaned or not documents:
         return empty
 
+    # Normalized once, not once per field compared against: a page runs to a
+    # few hundred fields, and a document tag asks this of every page it does
+    # not match outright. score_cutoff lets rapidfuzz abandon a comparison that
+    # cannot reach the threshold instead of scoring it fully.
+    prepared = [(term, _normalize_for_fuzzy(term.lower())) for term in cleaned]
     hits = []
     for file_name, kvs in documents.items():
         for key, values in kvs.items():
@@ -341,10 +430,10 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
                     normalized = _normalize_for_fuzzy((text or "").lower())
                     if not normalized:
                         continue
-                    for term in cleaned:
-                        score = fuzz.partial_ratio(
-                            _normalize_for_fuzzy(term.lower()), normalized)
-                        if score < fuzzy_threshold:
+                    for term, needle in prepared:
+                        score = fuzz.partial_ratio(needle, normalized,
+                                                   score_cutoff=fuzzy_threshold)
+                        if not score:
                             continue
                         loc = locations.get((file_name, key, value), {})
                         hits.append({"file": file_name, "key": key, "value": value,

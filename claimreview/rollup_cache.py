@@ -48,7 +48,13 @@ from .db import get_db
 # 4: a regex rule now also searches for the plain words inside its pattern,
 #    tolerantly, so rules that were failing on OCR noise start passing. The
 #    rules table is unchanged, so nothing else in the key would notice.
-ROLLUP_VERSION = 4
+#
+# 5: a document tag's pattern is now matched the way a rule's regex keyword is
+#    - per field rather than against the page's joined text, and with the same
+#    tolerant second look at the words inside it - so a tag lands on pages it
+#    used to miss, changing which pages a tag-scoped rule reads. The tag rows
+#    themselves did not change, so doc_tags.signature() would not notice.
+ROLLUP_VERSION = 5
 
 
 def _digest(*parts):
