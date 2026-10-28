@@ -197,7 +197,7 @@
     {% set edit_scope = edit_rule.config.doc_scope_tags if edit_rule else ['document', 'photo'] %}
     <fieldset class="settings-group" style="margin-top:1rem;">
       <legend>Document scope</legend>
-      <p class="settings-help">Which kinds of pages this rule looks at. Defaults to document + photo; gps photo (a photo whose extracted text mentions GPS/Lat/Lon/Google/Camera) and has face are opt-in.</p>
+      <p class="settings-help">Which kinds of pages this rule looks at. Defaults to document + photo; gps photo (a photo whose extracted text mentions GPS/Lat/Lon/Google/Camera) and has face are opt-in. Untick them all and the rule does not narrow by kind at all - which is what you want when a tag below is doing the narrowing.</p>
       {% for tag in doc_scope_tags %}
       <label class="settings-checkbox">
         <input type="checkbox" name="doc_scope_tags" value="{{ tag }}" {% if tag in edit_scope %}checked{% endif %}>
@@ -213,7 +213,8 @@
       <p class="settings-help" style="margin-top:0.6rem;">
         Tags, set up under <a href="{{ url_for('settings.view_settings') }}">Settings</a>.
         Tick one or more and this rule runs only on pages carrying one of them. Leave them all
-        unticked and they are ignored.
+        unticked and they are ignored. They narrow independently of the kinds above, so a tag on
+        its own means "these pages, whatever kind they are".
       </p>
       {% for tag in custom_doc_tags %}
       <label class="settings-checkbox" title="{{ tag.description or tag.pattern }}">

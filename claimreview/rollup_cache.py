@@ -59,7 +59,12 @@ from .db import get_db
 #    the term it was asked for - partial_ratio scored "course in hospital"
 #    against a field reading "Hospital" at 100 - so regex rules and tags that
 #    were passing on those stop. Affects every regex rule, not just tags.
-ROLLUP_VERSION = 6
+#
+# 7: a rule scoped to a tag with no built-in kind ticked matched no pages at
+#    all (an empty built-in set was read as a subset test), so it reported
+#    "No in-scope pages found" everywhere. Those rules now evaluate, and a
+#    claim's violation count can change.
+ROLLUP_VERSION = 7
 
 
 def _digest(*parts):

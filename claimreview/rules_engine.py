@@ -315,6 +315,12 @@ def _scope_page_filter(config, settings, content_type_cache, tag_patterns=None):
     filter: tick 'bill' and the rule runs on pages matching the bill pattern,
     and nothing else. Ticking none means custom tags are ignored entirely.
 
+    The two narrow independently, so ticking no built-in does not narrow by
+    kind at all - "ds pages, whatever kind of page they are". Treating an empty
+    built-in set as a subset test instead would ask every page to carry no
+    content type whatsoever, which no classified page does, and a rule scoped
+    to a tag alone would report "No in-scope pages found" on every claim.
+
     They could not share the subset test. Custom tags attach to pages that are
     already 'document' or 'photo', so folding them into it would have excluded
     every newly-tagged page from every rule already scoped to document+photo -
@@ -338,12 +344,15 @@ def _scope_page_filter(config, settings, content_type_cache, tag_patterns=None):
     patterns = [] if not custom else list(tag_patterns or doc_tags.compiled())
 
     def _match(page):
-        key = id(page)
-        if key not in content_type_cache:
-            content_type_cache[key] = _page_scope_tags(page, settings)
-        page_tags, unclassified = content_type_cache[key]
-        if not (unclassified or page_tags <= builtin):
-            return False
+        # Skipped entirely when no built-in is ticked, which also spares a
+        # tag-only rule the classification pass it would not consult.
+        if builtin:
+            key = id(page)
+            if key not in content_type_cache:
+                content_type_cache[key] = _page_scope_tags(page, settings)
+            page_tags, unclassified = content_type_cache[key]
+            if not (unclassified or page_tags <= builtin):
+                return False
         if not custom:
             return True
         # Cached alongside the content type: the same page is re-tested once
