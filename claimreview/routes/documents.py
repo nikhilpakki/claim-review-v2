@@ -1,6 +1,6 @@
 from flask import Blueprint, abort, current_app, jsonify, render_template, request, send_from_directory, url_for
 
-from .. import cache_store, claim_scanner, classify, root_state, settings_store
+from .. import cache_store, claim_scanner, classify, doc_tags, root_state, settings_store
 
 bp = Blueprint("documents", __name__)
 
@@ -23,7 +23,11 @@ def _classified_page(page_data, settings):
     for sig in page_data.get("signatures", []):
         sig_tags = classify.classify_signature(sig, settings)
         signatures.append({**sig, **sig_tags})
-    return {**page_data, **page_tags, "signatures": signatures}
+    # The admin's own tags, matched the same way the Documents tab and a
+    # rule's document scope match them, so one page cannot disagree with the
+    # row it sits under.
+    custom = sorted(doc_tags.tags_for_page(page_data, doc_tags.compiled()))
+    return {**page_data, **page_tags, "signatures": signatures, "doc_tags": custom}
 
 
 @bp.route("/claims/<claim_id>/doc/<path:doc_id>/page/<int:page>")

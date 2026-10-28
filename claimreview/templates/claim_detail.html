@@ -253,6 +253,9 @@
               {% if g.quality.correction_suspected %}<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>{% endif %}
               {% if g.quality.has_face %}<span class="tag tag-has-face" title="At least one page has a detected face">&#9888; has face</span>{% endif %}
             {% endif %}
+            {%- for tag in g.doc_tags %}
+            <span class="tag tag-custom" title="A page of this document matches the '{{ tag }}' tag">{{ tag }}</span>
+            {%- endfor %}
             {% if g.signature_flags %}
               {% if g.signature_flags.paste_suspicious %}<span class="tag tag-paste" title="{{ g.signature_flags.paste_notes|join('; ') or 'A signature region on this document shows artifacts consistent with a pasted patch' }} - worth a closer look, not proof of tampering">&#9888; possible paste</span>{% endif %}
               {% if g.signature_flags.duplicate_count %}<span class="tag tag-duplicate-signature" title="Matches a signature found elsewhere - could be a legitimate reused stamp, or worth checking">&#9888; {{ g.signature_flags.duplicate_count }} possible duplicate signature{{ 's' if g.signature_flags.duplicate_count != 1 else '' }}</span>{% endif %}

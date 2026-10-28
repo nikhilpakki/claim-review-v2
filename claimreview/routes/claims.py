@@ -5,8 +5,8 @@ from flask import (Blueprint, current_app, jsonify, redirect, render_template,
                    request, stream_with_context, url_for)
 
 from .. import (claim_amounts, claim_export, claim_extract, claim_scanner, claim_sections,
-                claim_summary, classify, csv_data, processing, rollup_cache, root_state,
-                rules_engine, settings_store, textract_profile, users)
+                claim_summary, classify, csv_data, doc_tags, processing, rollup_cache,
+                root_state, rules_engine, settings_store, textract_profile, users)
 from ..db import get_latest_runs
 from ..fetch import runs as fetch_runs
 
@@ -256,12 +256,34 @@ def _signature_summary(cached_result, settings):
             "duplicate_count": duplicate_count}
 
 
+def _document_tags(cached_result, patterns, by_hash, file_hash):
+    """The admin-defined tags this document carries, across all of its pages.
+
+    Keyed by content hash, because a claim routinely holds the same file under
+    several paths and they cannot carry different tags.
+    """
+    if not patterns or not cached_result:
+        return []
+    if file_hash not in by_hash:
+        found = set()
+        for page in cached_result.get("pages", []):
+            found |= doc_tags.tags_for_page(page, patterns)
+        by_hash[file_hash] = sorted(found)
+    return by_hash[file_hash]
+
+
 def _annotated_docs(claim_path, settings, profile=None):
     docs = claim_scanner.scan_claim_cached(claim_path)
+    # Prepared once for the whole claim: compiling a pattern per page of a
+    # couple of hundred would dwarf the matching.
+    tag_patterns = doc_tags.compiled()
+    tags_by_hash = {}
     for doc in docs:
         cached_result = doc["cached_result"]
         doc["cached"] = cached_result is not None
         doc["quality"] = _quality_summary(cached_result, settings) if cached_result else None
+        doc["doc_tags"] = _document_tags(cached_result, tag_patterns, tags_by_hash,
+                                         doc["file_hash"])
         doc["signature_flags"] = _signature_summary(cached_result, settings) if cached_result else None
         # Whether the current Textract profile asks for something this cached
         # analysis cannot contain (see textract_profile.py). Only ever true when
@@ -333,6 +355,7 @@ def _group_duplicate_docs(docs):
             "group": first["group"],
             "ext": first["ext"],
             "quality": first["quality"],
+            "doc_tags": first["doc_tags"],
             "signature_flags": first["signature_flags"],
         })
     return groups

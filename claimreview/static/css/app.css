@@ -172,6 +172,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .tag-gps-photo { background: #d1fae5; color: #065f46; }
 .tag-has-face { background: #ede9fe; color: #5b21b6; }
 .tag-mixed { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+/* Admin-defined tags share one style: there is no fixed set to give colours
+   to, and the outline keeps them readable as a group against the built-ins. */
+.tag-custom { background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc; }
 .tag-paste { background: #ffe4e6; color: #9f1239; }
 .tag-duplicate-signature { background: #fde68a; color: #78350f; }
 .tag-too-clean { background: #cffafe; color: #155e75; }

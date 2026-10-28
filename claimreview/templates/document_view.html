@@ -21,6 +21,9 @@
   {% if page_data.cropped_suspected %}<span class="tag tag-cropped" title="Content runs right up to the image edge ({{ page_data.edges|join(', ') }}), suggesting a cropped/cut-off capture">&#9888; cropped</span>{% endif %}
   {% if page_data.correction_suspected %}<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>{% endif %}
   {% if page_data.has_face %}<span class="tag tag-has-face" title="A face was detected on this page">&#9888; has face</span>{% endif %}
+  {%- for tag in page_data.doc_tags %}
+  <span class="tag tag-custom" title="This page matches the '{{ tag }}' tag">{{ tag }}</span>
+  {%- endfor %}
 </div>
 
 <div class="doc-viewer">

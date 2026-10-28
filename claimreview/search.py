@@ -421,7 +421,20 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
     # few hundred fields, and a document tag asks this of every page it does
     # not match outright. score_cutoff lets rapidfuzz abandon a comparison that
     # cannot reach the threshold instead of scoring it fully.
-    prepared = [(term, _normalize_for_fuzzy(term.lower())) for term in cleaned]
+    #
+    # min_chars is what keeps partial_ratio honest. It scores the best window
+    # of the longer string against the shorter one, so when the field is
+    # shorter than the term the roles reverse and a *fragment of the term*
+    # scores 100: "course in hospital" against a field reading "Hospital" is
+    # 100.0, and so is "final bill" against "bill". Requiring the field to be
+    # at least as long as the threshold says the term may be corrupted keeps
+    # the question "is this word in this text" from quietly becoming "is this
+    # text a piece of this word" - while still allowing the dropped letters
+    # this stage exists for ("oprative note attached" for "operative", 94.1).
+    prepared = []
+    for term in cleaned:
+        needle = _normalize_for_fuzzy(term.lower())
+        prepared.append((term, needle, len(needle) * fuzzy_threshold / 100.0))
     hits = []
     for file_name, kvs in documents.items():
         for key, values in kvs.items():
@@ -430,7 +443,9 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
                     normalized = _normalize_for_fuzzy((text or "").lower())
                     if not normalized:
                         continue
-                    for term, needle in prepared:
+                    for term, needle, min_chars in prepared:
+                        if len(normalized) < min_chars:
+                            continue
                         score = fuzz.partial_ratio(needle, normalized,
                                                    score_cutoff=fuzzy_threshold)
                         if not score:

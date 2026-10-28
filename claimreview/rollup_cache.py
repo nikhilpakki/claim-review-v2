@@ -54,7 +54,12 @@ from .db import get_db
 #    tolerant second look at the words inside it - so a tag lands on pages it
 #    used to miss, changing which pages a tag-scoped rule reads. The tag rows
 #    themselves did not change, so doc_tags.signature() would not notice.
-ROLLUP_VERSION = 5
+#
+# 6: the tolerant stage no longer matches a field that is merely a fragment of
+#    the term it was asked for - partial_ratio scored "course in hospital"
+#    against a field reading "Hospital" at 100 - so regex rules and tags that
+#    were passing on those stop. Affects every regex rule, not just tags.
+ROLLUP_VERSION = 6
 
 
 def _digest(*parts):
