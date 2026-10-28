@@ -184,6 +184,28 @@ CREATE TABLE IF NOT EXISTS doc_hash_cache (
   file_hash TEXT NOT NULL
 );
 
+-- Admin-defined page tags, on top of the built-in document/photo/gps photo/
+-- has face. A tag is a name and a pattern: a page carries it when the pattern
+-- is found in that page's extracted text, which is what lets a rule be scoped
+-- to, say, only the bills in a claim.
+--
+-- Central and global, like the rules themselves: a tag that meant different
+-- things to different reviewers would make two people's badges disagree with
+-- no way to tell why. Only an administrator can manage them.
+CREATE TABLE IF NOT EXISTS doc_tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- NOCASE so "Bill" and "bill" cannot both exist; they would render as two
+  -- checkboxes meaning the same thing.
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  description TEXT,
+  pattern TEXT NOT NULL,
+  case_sensitive INTEGER NOT NULL DEFAULT 0,
+  created_by_user_id INTEGER,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT
+);
+
 -- A reviewer's own shortlist. Bookmarking is personal: one reviewer marking a
 -- claim "Suspicious" says nothing about anyone else's queue, so every row is
 -- owned by a user and nobody sees another's.

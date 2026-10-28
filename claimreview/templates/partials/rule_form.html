@@ -204,6 +204,24 @@
         <span>{{ tag }}</span>
       </label>
       {% endfor %}
+
+      {#- Custom tags are listed apart because they narrow differently: the
+          built-ins above say what a page is, and a page must be nothing but
+          the kinds ticked; these say what a page contains, and ticking any
+          restricts the rule to pages carrying one of them. -#}
+      {% if custom_doc_tags %}
+      <p class="settings-help" style="margin-top:0.6rem;">
+        Tags, set up under <a href="{{ url_for('settings.view_settings') }}">Settings</a>.
+        Tick one or more and this rule runs only on pages carrying one of them. Leave them all
+        unticked and they are ignored.
+      </p>
+      {% for tag in custom_doc_tags %}
+      <label class="settings-checkbox" title="{{ tag.description or tag.pattern }}">
+        <input type="checkbox" name="doc_scope_tags" value="{{ tag.name }}" {% if tag.name in edit_scope %}checked{% endif %}>
+        <span>{{ tag.name }}</span>
+      </label>
+      {% endfor %}
+      {% endif %}
     </fieldset>
 
     <div class="settings-actions">

@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
-from .. import csv_data, procedure_codes, rules_engine, users
+from .. import csv_data, doc_tags, procedure_codes, rules_engine, users
 
 bp = Blueprint("rules", __name__)
 
@@ -51,6 +51,9 @@ def _rules_context(**extra):
         "query_aliases": [q["Alias"] for q in current_app.config["DEFAULT_QUERIES"]],
         "procedure_codes": procedure_codes.list_procedure_codes(),
         "doc_scope_tags": rules_engine.DOC_SCOPE_TAGS,
+        # The admin's own tags, listed separately in the form because they
+        # narrow a rule differently - see partials/rule_form.html.
+        "custom_doc_tags": doc_tags.list_tags(),
         "edit_rule": None,
         "back_url": _safe_next() or url_for("claims.list_claims_view"),
         "next_qs": _next_qs(),
@@ -106,7 +109,11 @@ def _procedure_codes_from_form(form):
 
 
 def _doc_scope_tags_from_form(form):
-    tags = form.getlist("doc_scope_tags")
+    # Only names that exist: a stale checkbox from a page left open before a
+    # tag was deleted would otherwise be stored and silently narrow the rule to
+    # nothing.
+    known = {name.lower(): name for name in rules_engine.all_scope_tags()}
+    tags = [known[t.lower()] for t in form.getlist("doc_scope_tags") if t.lower() in known]
     return tags if tags else list(rules_engine.DEFAULT_DOC_SCOPE_TAGS)
 
 

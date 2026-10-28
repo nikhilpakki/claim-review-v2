@@ -18,7 +18,7 @@ import os
 from flask import current_app
 
 from . import (claim_extract, claim_scanner, claim_summary, classify, csv_data,
-               search, settings_store, users)
+               doc_tags, search, settings_store, users)
 from .db import get_db
 
 RULE_TYPES = ("field_present", "field_consistency", "length_of_stay", "documents_present")
@@ -31,6 +31,7 @@ MAX_PASS_REFS = 5
 # be e.g. both "photo" and "has face") - see _page_scope_tags below.
 DOC_SCOPE_TAGS = ("document", "photo", "gps photo", "has face")
 DEFAULT_DOC_SCOPE_TAGS = ["document", "photo"]
+_BUILTIN_LOWER = {tag.lower() for tag in DOC_SCOPE_TAGS}
 
 
 # --------------------------------------------------------------- CRUD
@@ -315,17 +316,59 @@ def _page_scope_tags(page, settings):
     return tags, content_type is None
 
 
-def _scope_page_filter(config, settings, content_type_cache):
+def all_scope_tags():
+    """Every tag a rule can be scoped to: the built-ins, then the admin's own.
+
+    Built-ins first and in their fixed order, so the checkboxes a reviewer
+    already knows do not move when a tag is added.
+    """
+    return list(DOC_SCOPE_TAGS) + [
+        name for name in doc_tags.tag_names() if name.lower() not in _BUILTIN_LOWER
+    ]
+
+
+def _split_scope(configured):
+    """(built-in tags, custom tags) out of a rule's doc_scope_tags.
+
+    A name that is neither - a tag that has since been deleted - is dropped
+    rather than treated as a custom tag nothing can match, which would make the
+    rule silently apply to no pages at all.
+    """
+    known_custom = {name.lower(): name for name in doc_tags.tag_names()}
+    builtin, custom = set(), set()
+    for tag in configured:
+        lowered = str(tag).lower()
+        if lowered in _BUILTIN_LOWER:
+            builtin.add(str(tag))
+        elif lowered in known_custom:
+            custom.add(known_custom[lowered])
+    return builtin, custom
+
+
+def _scope_page_filter(config, settings, content_type_cache, tag_patterns=None):
     """Builds a page_filter(page) -> bool for documents_from_docs()/
     _collect_query_values() from a rule's doc_scope_tags config, so a rule
     scoped to (say) just 'document'+'photo' pages doesn't see text
-    extracted from gps-photo or face pages. A page is included only if
-    *every* tag it carries (see _page_scope_tags) is in the configured set
-    - so a page that's otherwise a plain 'photo' but also has a detected
-    face is excluded unless 'has face' is explicitly added to the scope,
-    same as a 'gps photo' page is excluded unless that's added. Returns
-    None (no filtering) when every tag is selected, since that's equivalent
-    to not filtering and is the common case.
+    extracted from gps-photo or face pages.
+
+    The two kinds of tag are matched differently, on purpose.
+
+    A built-in tag is a statement about what a page *is*: a page is included
+    only if *every* tag it carries is in the configured set, so a page that is
+    otherwise a plain 'photo' but also has a face is excluded unless 'has face'
+    is explicitly added. Returns None (no filtering) when every built-in is
+    selected and no custom tag is, since that is equivalent to not filtering
+    and is the common case.
+
+    A custom tag is a statement about what a page *contains*, and is a positive
+    filter: tick 'bill' and the rule runs on pages matching the bill pattern,
+    and nothing else. Ticking none means custom tags are ignored entirely.
+
+    They could not share the subset test. Custom tags attach to pages that are
+    already 'document' or 'photo', so folding them into it would have excluded
+    every newly-tagged page from every rule already scoped to document+photo -
+    an existing rule quietly going quiet the moment an administrator added an
+    unrelated tag.
 
     `content_type_cache` is a plain dict the caller owns for the lifetime
     of one evaluate_rules() call, keyed by id(page) - classify.py's
@@ -334,16 +377,30 @@ def _scope_page_filter(config, settings, content_type_cache):
     would otherwise be recomputed once per rule that has scope filtering
     active, for every page in the claim.
     """
-    tags = set(config.get("doc_scope_tags") or DEFAULT_DOC_SCOPE_TAGS)
-    if tags >= set(DOC_SCOPE_TAGS):
+    configured = config.get("doc_scope_tags") or DEFAULT_DOC_SCOPE_TAGS
+    builtin, custom = _split_scope(configured)
+    if builtin >= set(DOC_SCOPE_TAGS) and not custom:
         return None
+    # Every tag's pattern, not just this rule's: the per-page result is cached
+    # and shared across rules, so narrowing it to one rule's selection would
+    # hand the next rule an answer computed for somebody else's question.
+    patterns = [] if not custom else list(tag_patterns or doc_tags.compiled())
 
     def _match(page):
         key = id(page)
         if key not in content_type_cache:
             content_type_cache[key] = _page_scope_tags(page, settings)
         page_tags, unclassified = content_type_cache[key]
-        return unclassified or page_tags <= tags
+        if not (unclassified or page_tags <= builtin):
+            return False
+        if not custom:
+            return True
+        # Cached alongside the content type: the same page is re-tested once
+        # per rule that narrows by a tag.
+        tag_key = ("tags", id(page))
+        if tag_key not in content_type_cache:
+            content_type_cache[tag_key] = doc_tags.tags_for_page(page, patterns)
+        return bool(content_type_cache[tag_key] & custom)
 
     return _match
 
@@ -446,7 +503,8 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
     """
     scope = config.get("scope", "any_doc")
     page_scope = config.get("page_scope", "any_page")
-    page_filter = _scope_page_filter(config, settings, content_type_cache)
+    page_filter = _scope_page_filter(config, settings, content_type_cache,
+                                     ctx.get("tag_patterns"))
 
     if config.get("compare_with_csv"):
         csv_field = (config.get("csv_field") or "").strip()
@@ -587,7 +645,8 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
     if not concept:
         return {"status": "no_data", "message": "No concept configured"}
 
-    page_filter = _scope_page_filter(config, settings, content_type_cache)
+    page_filter = _scope_page_filter(config, settings, content_type_cache,
+                                     ctx.get("tag_patterns"))
     occurrences = _collect_query_values(docs, concept, page_filter=page_filter)
     if config.get("skip_empty"):
         # Drop occurrences with no real word content (blank/garbage OCR
@@ -693,7 +752,8 @@ def _evaluate_length_of_stay(claim_id, docs, config, settings, ctx):
 
     extracted = {}
     if config.get("compare_with_extracted", True):
-        page_filter = _scope_page_filter(config, settings, content_type_cache)
+        page_filter = _scope_page_filter(config, settings, content_type_cache,
+                                     ctx.get("tag_patterns"))
         for alias, csv_dt, label in (("Date of Admission", adm, "admission"),
                                       ("Date of Discharge", dis, "discharge")):
             occs = _collect_query_values(docs, alias, page_filter=page_filter)
@@ -919,6 +979,9 @@ def evaluate_rules(claim_id, claim_path, docs=None, settings=None, user_id=None,
         "user_id": user_id,
         "file_names": {doc["file_name"].lower() for doc in docs},
         "claim_path": claim_path,
+        # Custom tag patterns, compiled once for the whole claim rather than
+        # once per rule per page.
+        "tag_patterns": doc_tags.compiled(),
     }
     docs = _dedupe_by_hash(docs)
     results = []

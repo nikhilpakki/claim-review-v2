@@ -3,7 +3,7 @@ from urllib.parse import quote
 from flask import (Blueprint, current_app, jsonify, redirect, render_template,
                    request, url_for)
 
-from .. import settings_store, textract_profile, users
+from .. import doc_tags, settings_store, textract_profile, users
 from .auth import admin_required
 
 bp = Blueprint("settings", __name__)
@@ -109,6 +109,10 @@ def _template_context(values=None):
                 current_app.config["DEFAULT_QUERIES"]),
         },
         "always_on_note": ALWAYS_ON_NOTE,
+        "doc_tags": doc_tags.list_tags(),
+        "builtin_tags": sorted(doc_tags.BUILTIN_NAMES),
+        "edit_tag": None,
+        "tag_error": None,
         "back_url": _safe_next() or url_for("claims.list_claims_view"),
         "next_qs": _next_qs(),
     }
@@ -164,4 +168,49 @@ def reset_settings():
     settings_store.reset_settings()
     if _is_ajax():
         return jsonify({"status": "reset", "values": settings_store.get_settings()})
+    return redirect(url_for("settings.view_settings", next=_safe_next()))
+
+
+# ------------------------------------------------------------ document tags
+
+@bp.route("/settings/tags/<int:tag_id>/edit")
+@admin_required
+def edit_tag_form(tag_id):
+    tag = doc_tags.get_tag(tag_id)
+    if tag is None:
+        return redirect(url_for("settings.view_settings"))
+    context = _template_context()
+    context["edit_tag"] = tag
+    return render_template("settings.html", **context)
+
+
+@bp.route("/settings/tags", methods=["POST"])
+@admin_required
+def create_tag():
+    try:
+        doc_tags.create_tag(request.form, users.current_user())
+    except doc_tags.DocTagError as exc:
+        context = _template_context()
+        context["tag_error"] = str(exc)
+        return render_template("settings.html", **context), 400
+    return redirect(url_for("settings.view_settings", next=_safe_next()))
+
+
+@bp.route("/settings/tags/<int:tag_id>/update", methods=["POST"])
+@admin_required
+def update_tag(tag_id):
+    try:
+        doc_tags.update_tag(tag_id, request.form)
+    except doc_tags.DocTagError as exc:
+        context = _template_context()
+        context["tag_error"] = str(exc)
+        context["edit_tag"] = doc_tags.get_tag(tag_id) or dict(request.form)
+        return render_template("settings.html", **context), 400
+    return redirect(url_for("settings.view_settings", next=_safe_next()))
+
+
+@bp.route("/settings/tags/<int:tag_id>/delete", methods=["POST"])
+@admin_required
+def delete_tag(tag_id):
+    doc_tags.delete_tag(tag_id)
     return redirect(url_for("settings.view_settings", next=_safe_next()))

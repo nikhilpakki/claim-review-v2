@@ -1,0 +1,101 @@
+{% set t = edit_tag %}
+<h2 style="margin-top:2rem; font-size:1.1rem;">Document tags</h2>
+<p class="hint">
+  Tags mark what a page <em>contains</em>, on top of the built-in
+  {{ builtin_tags|join(', ') }}, which describe what a page <em>is</em>. A page carries a tag when
+  that tag's pattern is found in the page's extracted text. Once a tag exists, every reviewer can
+  scope a rule to it under <strong>Document scope</strong> on the Rules page.
+  {% if not is_admin %}
+  <br>Only administrators can add or change tags.
+  {% endif %}
+</p>
+
+{% if tag_error %}<p class="error-banner">{{ tag_error }}</p>{% endif %}
+
+{% if is_admin %}
+<form method="post"
+      action="{{ url_for('settings.update_tag', tag_id=t.id) if t else url_for('settings.create_tag') }}{{ next_qs }}">
+  <fieldset class="settings-group">
+    <legend>{{ 'Edit tag' if t else 'New tag' }}</legend>
+
+    <div class="settings-field">
+      <label for="tag-name">Tag name</label>
+      <input type="text" id="tag-name" name="name" required maxlength="40"
+             value="{{ t.name if t else '' }}" placeholder="e.g. bill, feedback form, ds">
+      <p class="settings-help">
+        Shown as a checkbox on every rule. Cannot be one of the built-in names.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label for="tag-description">Description</label>
+      <input type="text" id="tag-description" name="description" maxlength="200"
+             value="{{ t.description or '' if t else '' }}"
+             placeholder="Optional - what this tag is for">
+    </div>
+
+    <div class="settings-field">
+      <label for="tag-pattern">Pattern to look for</label>
+      <input type="text" id="tag-pattern" name="pattern" required maxlength="500"
+             value="{{ t.pattern if t else '' }}"
+             placeholder="e.g. (final bill|bill of supply|invoice)">
+      <p class="settings-help">
+        A regular expression, matched against the page's extracted text - the same text a keyword
+        rule searches: form fields, query answers, table cells and section text. A page matching it
+        carries this tag.
+        {#- Worth saying plainly: unlike a keyword rule, this is the pattern and nothing else. -#}
+        <br>Matched as written. Unlike a rule's keyword, a tag does not also search for the words
+        inside the pattern, because a tag decides which pages a rule reads at all.
+      </p>
+    </div>
+
+    <div class="settings-field">
+      <label class="settings-checkbox">
+        <input type="checkbox" name="case_sensitive" {{ 'checked' if t and t.case_sensitive }}>
+        <span>Case sensitive</span>
+      </label>
+      <p class="settings-help">Off by default, since OCR capitalisation is unreliable.</p>
+    </div>
+
+    <div class="settings-actions">
+      <button type="submit">{{ 'Save tag' if t else 'Add tag' }}</button>
+      {% if t %}
+      <a class="btn btn-secondary" href="{{ url_for('settings.view_settings') }}{{ next_qs }}"
+         style="text-decoration:none; display:inline-block;">Cancel</a>
+      {% endif %}
+    </div>
+  </fieldset>
+</form>
+{% endif %}
+
+<ul class="doc-list">
+  {% for tag in doc_tags %}
+  <li>
+    <span class="doc-text">
+      <span class="doc-file-name">{{ tag.name }}</span>
+      {% if tag.description %}<span class="doc-dir-path">{{ tag.description }}</span>{% endif %}
+      <span class="doc-dir-path">
+        <code>{{ tag.pattern }}</code>
+        &middot; {{ 'case sensitive' if tag.case_sensitive else 'case insensitive' }}
+        {%- if tag.created_by %} &middot; by {{ tag.created_by }}{% endif %}
+      </span>
+    </span>
+    {% if is_admin %}
+    <span class="doc-tags">
+      <a class="btn btn-secondary" href="{{ url_for('settings.edit_tag_form', tag_id=tag.id) }}{{ next_qs }}"
+         style="text-decoration:none; display:inline-block;">Edit</a>
+      <form method="post" action="{{ url_for('settings.delete_tag', tag_id=tag.id) }}{{ next_qs }}"
+            style="display:inline;"
+            data-confirm="Delete the tag '{{ tag.name }}'? Rules scoped to it stop narrowing by it; they are not otherwise changed.">
+        <button type="submit" class="btn-secondary">Delete</button>
+      </form>
+    </span>
+    {% endif %}
+  </li>
+  {% else %}
+  <li class="empty">
+    No tags yet.
+    {%- if is_admin %} Add one above to let rules be scoped to a kind of page.{% endif %}
+  </li>
+  {% endfor %}
+</ul>

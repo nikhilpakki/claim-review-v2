@@ -45,8 +45,17 @@
 <form method="post" action="{{ url_for('settings.reset_settings') }}{{ next_qs }}" class="settings-reset-form" id="settings-reset-form">
   <button type="submit" class="btn-secondary">Reset all to defaults</button>
 </form>
+
+{% include "partials/doc_tags.html" %}
 {% endblock %}
 {% block scripts %}
+<script>
+document.querySelectorAll('form[data-confirm]').forEach((form) => {
+  form.addEventListener('submit', (e) => {
+    if (!window.confirm(form.dataset.confirm)) e.preventDefault();
+  });
+});
+</script>
 <script>
 (function () {
   const form = document.getElementById('settings-form');

@@ -16,6 +16,7 @@ covers every input:
   changed, renamed or deleted file changes the set),
 - the settings, since they decide every tag,
 - the rules, since rule outcomes are part of the rollup,
+- the document tags, since they decide which pages a scoped rule reads,
 - the claims dataset version, since rules cross-check against it,
 - the mirrored extraction for this claim, since rules can read it,
 - ROLLUP_VERSION, bumped by hand when the classification code itself changes
@@ -28,7 +29,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from . import users
+from . import doc_tags, users
 from .db import get_db
 
 # Bump when classify.py / rules_engine.py change in a way that alters results
@@ -90,6 +91,10 @@ def global_fingerprint(settings, user_id=None):
         sorted(settings.items()),
         _rules_signature(user_id),
         _csv_signature(user_id),
+        # The tag definitions, since a rule scoped to a tag sees different
+        # pages when that tag's pattern changes - and the rules table itself
+        # would not have moved.
+        doc_tags.signature(),
     )
 
 
