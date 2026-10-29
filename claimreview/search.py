@@ -280,14 +280,8 @@ def search_keyword(documents, keyword, regex=False, case_insensitive=True, locat
     except re.error as exc:
         raise InvalidKeywordPattern(str(exc)) from exc
 
-    def _hit(rec):
-        loc = locations.get((rec["file"], rec["key"], rec["value"]), {})
-        return {"file": rec["file"], "key": rec["key"], "value": rec["value"],
-                "matched_on": rec["matched_on"], "method": "regex" if regex else "keyword",
-                "score": 100.0, **loc}
-
-    hits = [_hit({"file": file_name, "key": key, "value": value, "matched_on": side})
-            for file_name, key, value, side in _pattern_hits(documents, pattern)]
+    hits = pattern_hits(documents, pattern, locations,
+                        method="regex" if regex else "keyword")
 
     if not hits:
         return empty
@@ -382,6 +376,22 @@ def matches_pattern(documents, pattern):
     for _ in _pattern_hits(documents, pattern):
         return True
     return False
+
+
+def pattern_hits(documents, pattern, locations=None, method="regex"):
+    """Every hit an already-compiled `pattern` makes, with locations attached.
+
+    search_keyword() answers this for a keyword typed into the search box, and
+    compiles the pattern itself. A document tag already holds its compiled
+    pattern and needs the same list rather than just a yes/no, so a badge can
+    say which field put it there - and say it in the same terms the search box
+    would, since it is the same code that found it.
+    """
+    locations = locations or {}
+    return [{"file": file_name, "key": key, "value": value, "matched_on": side,
+             "method": method, "score": 100.0,
+             **locations.get((file_name, key, value), {})}
+            for file_name, key, value, side in _pattern_hits(documents, pattern)]
 
 
 def search_terms(documents, terms, locations=None, fuzzy_threshold=None):

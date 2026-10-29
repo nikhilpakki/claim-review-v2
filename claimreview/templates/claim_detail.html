@@ -235,7 +235,7 @@
     <div class="tab-panel active" id="tab-documents">
       <ul class="doc-list" id="doc-list">
         {% for g in doc_groups %}
-        <li data-doc-id="{{ g.doc_id }}">
+        <li data-doc-id="{{ g.doc_id }}" data-tag-host>
           <a href="{{ url_for('documents.view_page', claim_id=claim_id, doc_id=g.doc_id, page=1) }}"
              class="doc-open-link doc-row-main" data-doc-id="{{ g.doc_id }}" title="{{ g.file_name_display }}">
             <span class="doc-group-tag">{{ g.group }}</span>
@@ -254,7 +254,9 @@
               {% if g.quality.has_face %}<span class="tag tag-has-face" title="At least one page has a detected face">&#9888; has face</span>{% endif %}
             {% endif %}
             {%- for tag in g.doc_tags %}
-            <span class="tag tag-custom" title="A page of this document matches the '{{ tag }}' tag">{{ tag }}</span>
+            <button type="button" class="tag tag-custom tag-clickable" data-tag="{{ tag }}"
+                    data-doc-id="{{ g.doc_id }}"
+                    title="A page of this document matches the '{{ tag }}' tag - click to see what matched, and where">{{ tag }}</button>
             {%- endfor %}
             {% if g.signature_flags %}
               {% if g.signature_flags.paste_suspicious %}<span class="tag tag-paste" title="{{ g.signature_flags.paste_notes|join('; ') or 'A signature region on this document shows artifacts consistent with a pasted patch' }} - worth a closer look, not proof of tampering">&#9888; possible paste</span>{% endif %}
@@ -306,6 +308,7 @@
 <script src="{{ url_for('static', filename='js/process.js') }}"></script>
 <script src="{{ url_for('static', filename='js/preview.js') }}"></script>
 <script src="{{ url_for('static', filename='js/search.js') }}"></script>
+<script src="{{ url_for('static', filename='js/doc_tags.js') }}"></script>
 <script src="{{ url_for('static', filename='js/review.js') }}"></script>
 <script src="{{ url_for('static', filename='js/bookmark.js') }}"></script>
 <script>

@@ -175,6 +175,34 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 /* Admin-defined tags share one style: there is no fixed set to give colours
    to, and the outline keeps them readable as a group against the built-ins. */
 .tag-custom { background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc; }
+
+/* A custom tag is a pattern somebody typed, so it has to be checkable: the
+   badge is a button that opens what it matched. Buttons inherit neither the
+   page font nor .tag's sizing, hence the reset. */
+.tag-clickable {
+  cursor: pointer; font-family: inherit; font-size: 0.72rem; line-height: inherit;
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.tag-clickable:hover { background: #cffafe; }
+.tag-clickable.is-open { background: #0e7490; color: #ecfeff; border-color: #0e7490; }
+
+/* Sits below the row or the page header it explains. flex-basis 100% because
+   both hosts are wrapping flex rows, where a plain block would try to share a
+   line with the badges. */
+.tag-matches {
+  flex: 1 1 100%; width: 100%; margin: 0.5rem 0 0.1rem;
+  border-left: 3px solid #a5f3fc; padding-left: 0.7rem;
+}
+.tag-matches .hint { margin: 0 0 0.4rem; }
+.tag-match {
+  display: block; padding: 0.4rem 0.55rem; margin-bottom: 0.3rem; text-decoration: none;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
+  color: var(--text);
+}
+.tag-match:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
+.tag-match .score { display: block; font-size: 0.72rem; color: var(--muted); margin-bottom: 0.15rem; }
+.tag-match .kv { font-size: 0.86rem; overflow-wrap: anywhere; }
+.tag-match .kv .key { color: var(--muted); margin-right: 0.3rem; }
 .tag-paste { background: #ffe4e6; color: #9f1239; }
 .tag-duplicate-signature { background: #fde68a; color: #78350f; }
 .tag-too-clean { background: #cffafe; color: #155e75; }
@@ -444,7 +472,12 @@ a.rule-ref:hover { text-decoration: none; border-bottom-style: solid; }
 .bbox-highlight.flash { animation: flash-box 1.2s ease-out 2; }
 @keyframes flash-box { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-.page-nav { display: flex; align-items: center; gap: 0.85rem; margin: 0 0 0.9rem; font-size: 0.88rem; }
+/* Wraps because the tag-match panel opens inside it: on one nowrap line the
+   panel is squeezed to nothing and the badge looks like it does nothing. */
+.page-nav {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.85rem;
+  margin: 0 0 0.9rem; font-size: 0.88rem;
+}
 .page-nav a { color: var(--accent); text-decoration: none; font-weight: 500; }
 .page-nav a:hover { text-decoration: underline; }
 .page-nav span { color: var(--muted); }

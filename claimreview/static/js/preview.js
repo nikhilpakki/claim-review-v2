@@ -95,7 +95,7 @@
         </span>
         <a href="${data.standalone_url}" target="_blank" rel="noopener" class="open-new-tab" title="Open in new tab">&#8599; open</a>
       </div>
-      <div class="page-nav">
+      <div class="page-nav" data-tag-host>
         ${data.page_number > 1 ? `<a href="#" id="prev-page-link">&laquo; prev</a>` : ''}
         <span>Page ${data.page_number} / ${data.num_pages}</span>
         ${data.page_number < data.num_pages ? `<a href="#" id="next-page-link">next &raquo;</a>` : ''}
@@ -105,6 +105,7 @@
         ${data.cropped_suspected ? `<span class="tag tag-cropped" title="Content runs right up to the image edge (${(data.edges || []).join(', ')}), suggesting a cropped/cut-off capture">&#9888; cropped</span>` : ''}
         ${data.correction_suspected ? `<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>` : ''}
         ${data.has_face ? `<span class="tag tag-has-face" title="A face was detected on this page">&#9888; has face</span>` : ''}
+        ${(data.doc_tags || []).map((t) => `<button type="button" class="tag tag-custom tag-clickable" data-tag="${escapeHtml(t)}" data-doc-id="${escapeHtml(docId)}" data-page="${data.page_number}" title="This page matches the '${escapeHtml(t)}' tag - click to see what matched">${escapeHtml(t)}</button>`).join('')}
       </div>
       <div class="doc-viewer">
         <div class="page-pane">

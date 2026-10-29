@@ -4,6 +4,11 @@ from .. import cache_store, claim_scanner, classify, doc_tags, root_state, setti
 
 bp = Blueprint("documents", __name__)
 
+# A tag can match a word that recurs all over a dense page. The panel behind a
+# badge exists to show where the tag came from, not to be a second search
+# results list, so it shows the first few and says how many there were.
+MAX_TAG_MATCHES = 25
+
 
 def _load_doc_cache(claim_path, doc_id):
     abs_path = claim_scanner.resolve_doc(claim_path, doc_id)
@@ -84,6 +89,57 @@ def api_page_blocks(claim_id, doc_id, page):
     response["claim_id"] = claim_id
     response["standalone_url"] = url_for("documents.view_page", claim_id=claim_id, doc_id=doc_id, page=page)
     return jsonify(response)
+
+
+@bp.route("/api/claims/<claim_id>/doc/<path:doc_id>/tag-matches")
+def api_tag_matches(claim_id, doc_id):
+    """Why this document carries the tags it does - the field each tag matched,
+    on which page, and the boxes to highlight when the reviewer jumps to it.
+
+    Computed on demand rather than carried on every document row: the claim's
+    document list would otherwise pay, on every load, for an explanation
+    nobody has asked for.
+    """
+    try:
+        claim_path = root_state.get_claim_path(claim_id)
+        cached, _file_hash = _load_doc_cache(claim_path, doc_id)
+    except (ValueError, FileNotFoundError):
+        return jsonify({"error": "Not found"}), 404
+    if not cached:
+        return jsonify({"error": "Not processed yet"}), 404
+
+    wanted = (request.args.get("tag") or "").strip().lower()
+    only_page = request.args.get("page", type=int)
+
+    patterns = doc_tags.compiled()
+    if wanted:
+        patterns = [p for p in patterns if p[0].lower() == wanted]
+
+    found = {}
+    for page in cached["pages"]:
+        if only_page and page["page_number"] != only_page:
+            continue
+        for name, hits in doc_tags.matches_for_page(page, patterns, doc_id).items():
+            for hit in hits:
+                found.setdefault(name, []).append({
+                    **hit,
+                    # Set here and not taken from the hit: only form fields
+                    # carry geometry, so a table cell arrives with no location
+                    # at all and would otherwise have no page to link to.
+                    "page_number": page["page_number"],
+                    "url": url_for("documents.view_page", claim_id=claim_id,
+                                   doc_id=doc_id, page=page["page_number"],
+                                   field=hit["matched_on"], key=hit["key"],
+                                   value=hit["value"]),
+                })
+
+    return jsonify({
+        "claim_id": claim_id,
+        "doc_id": doc_id,
+        "tags": [{"name": name, "total": len(found[name]),
+                  "matches": found[name][:MAX_TAG_MATCHES]}
+                 for name in sorted(found)],
+    })
 
 
 @bp.route("/api/claims/<claim_id>/signatures")

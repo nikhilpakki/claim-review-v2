@@ -7,7 +7,7 @@
 {% if not page_data %}
   <p class="hint">This document hasn't been processed yet. Go back to the claim and click "Process Claim".</p>
 {% else %}
-<div class="page-nav">
+<div class="page-nav" data-tag-host>
   {% if page > 1 %}
   <a href="{{ url_for('documents.view_page', claim_id=claim_id, doc_id=doc_id, page=page-1) }}">&laquo; prev</a>
   {% endif %}
@@ -22,7 +22,9 @@
   {% if page_data.correction_suspected %}<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>{% endif %}
   {% if page_data.has_face %}<span class="tag tag-has-face" title="A face was detected on this page">&#9888; has face</span>{% endif %}
   {%- for tag in page_data.doc_tags %}
-  <span class="tag tag-custom" title="This page matches the '{{ tag }}' tag">{{ tag }}</span>
+  <button type="button" class="tag tag-custom tag-clickable" data-tag="{{ tag }}"
+          data-claim-id="{{ claim_id }}" data-doc-id="{{ doc_id }}" data-page="{{ page }}"
+          title="This page matches the '{{ tag }}' tag - click to see what matched">{{ tag }}</button>
   {%- endfor %}
 </div>
 
@@ -101,4 +103,5 @@
   };
 </script>
 <script src="{{ url_for('static', filename='js/overlay.js') }}"></script>
+<script src="{{ url_for('static', filename='js/doc_tags.js') }}"></script>
 {% endblock %}

@@ -234,3 +234,54 @@ def tags_for_page(page, patterns):
         elif terms and search.search_terms(documents, terms)["best"] is not None:
             found.add(name)
     return found
+
+
+def matches_for_page(page, patterns, file_name="page"):
+    """{tag: [hit, ...]} - which fields on this page each tag matched.
+
+    tags_for_page() answers whether the badge belongs on the page; this
+    answers why, so a reviewer can check a tag instead of taking it on faith.
+    The two run the same two stages over the same primitives, so what is shown
+    here is necessarily what put the badge there.
+
+    Deliberately not short-circuited, and deliberately not what the badge is
+    computed from: this runs for one document when someone clicks its tag,
+    while tags_for_page runs for every page of every claim on the list.
+    """
+    if not patterns:
+        return {}
+    kvs = search.page_kv_dict(page)
+    if not kvs:
+        return {}
+    documents = {file_name: kvs}
+    locations = search.page_locations(page, file_name)
+    found = {}
+    for name, pattern, terms in patterns:
+        hits = search.pattern_hits(documents, pattern, locations)
+        if not hits and terms:
+            hits = search.search_terms(documents, terms, locations)["matches"]
+        hits = _one_per_field(hits)
+        if hits:
+            found[name] = hits
+    return found
+
+
+def _one_per_field(hits):
+    """Collapse the two directions a form field is searched from.
+
+    page_kv_dict indexes a form pair both ways round, so a pattern matching
+    "DECLARATION CERTIFICATE" is reported once with it as the key and once
+    with it as the value of the reversed pair. The search box has always shown
+    both and they are each true; in a panel explaining one badge they read as
+    two separate findings, which is simply wrong. The first is kept, which is
+    the pair the way Textract gave it.
+    """
+    seen, out = set(), []
+    for hit in hits:
+        fingerprint = (hit.get("page_number"),
+                       frozenset((hit.get("key") or "", hit.get("value") or "")))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        out.append(hit)
+    return out

@@ -71,11 +71,24 @@ def logout():
     return redirect(url_for("auth.login"))
 
 
+# What each action says once it has succeeded. Looked up here rather than
+# carried in the URL: the message survives the redirect without letting
+# anything in the query string decide what the page tells an administrator.
+SAVED_MESSAGES = {
+    "create": "Account created.",
+    "password": "Password changed.",
+    "toggle_admin": "Administrator rights updated.",
+    "toggle_hypotheses": "Hypothesis permissions updated.",
+    "toggle_active": "Account updated.",
+}
+
+
 @bp.route("/admin/users")
 @admin_required
 def list_users():
     return render_template("users.html", users=users.list_users(),
-                           current=users.current_user(), error=None, message=None)
+                           current=users.current_user(), error=None,
+                           message=SAVED_MESSAGES.get(request.args.get("done")))
 
 
 @bp.route("/admin/users", methods=["POST"])
@@ -129,9 +142,16 @@ def save_user():
     except (KeyError, ValueError):
         error = "That request was incomplete."
 
-    return render_template("users.html", users=users.list_users(),
-                           current=users.current_user(), error=error, message=message), \
-        (400 if error else 200)
+    if error:
+        # Re-rendered rather than redirected, so the reason stays on screen
+        # next to the form that caused it.
+        return render_template("users.html", users=users.list_users(),
+                               current=users.current_user(), error=error,
+                               message=None), 400
+    # Post/Redirect/Get. Without it the browser holds on to the POST, and a
+    # refresh re-submits it - which for toggle_admin or toggle_active means
+    # silently flipping the flag straight back again.
+    return redirect(url_for("auth.list_users", done=action if message else None))
 
 
 def _admin_count():

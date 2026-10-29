@@ -5,6 +5,8 @@
   {{ builtin_tags|join(', ') }}, which describe what a page <em>is</em>. A page carries a tag when
   that tag's pattern is found in the page's extracted text. Once a tag exists, every reviewer can
   scope a rule to it under <strong>Document scope</strong> on the Rules page.
+  A tag shown on a document or a page is clickable: it lists the fields it matched, and jumps to
+  the page with the field boxed, so a pattern can be checked rather than trusted.
   {% if not is_admin %}
   <br>Only administrators can add or change tags.
   {% endif %}
