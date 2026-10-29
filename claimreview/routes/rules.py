@@ -2,7 +2,7 @@ from urllib.parse import quote
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
-from .. import csv_data, doc_tags, procedure_codes, rules_engine, users
+from .. import csv_data, doc_tags, matching, procedure_codes, rules_engine, users
 
 bp = Blueprint("rules", __name__)
 
@@ -138,8 +138,9 @@ def _config_from_form(form, rule_type):
             "compare_with_csv": form.get("fp_compare_with_csv") == "on",
             "csv_field": (form.get("fp_csv_field") or "").strip(),
             "keyword": (form.get("fp_keyword") or "").strip(),
-            "regex": form.get("fp_regex") == "on",
-            "case_insensitive": form.get("fp_case_insensitive") == "on",
+            # regex/case_insensitive/exact/fuzzy/fuzzy_threshold, read the same
+            # way the tag form reads them so the two screens cannot drift.
+            **matching.from_form(form, prefix="fp_"),
             "scope": scope,
             "page_scope": page_scope,
         }

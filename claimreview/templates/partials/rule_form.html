@@ -1,3 +1,4 @@
+{% from 'partials/match_controls.html' import match_controls with context %}
 {% macro scope_select(field_id, cur_scope, cur_page_scope) %}
 <select id="{{ field_id }}" name="{{ field_id }}" style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
   <option value="any_page_any_doc" {% if cur_scope == 'any_doc' and cur_page_scope != 'all_pages' %}selected{% endif %}>Any page, of at least one document</option>
@@ -51,18 +52,10 @@
           <input type="text" id="fp_keyword" name="fp_keyword" placeholder="e.g. consent form"
                  value="{{ edit_rule.config.keyword if edit_rule and edit_rule.rule_type == 'field_present' else '' }}"
                  style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
-          <p class="settings-help">Fixed text (or regex pattern) that must appear in the claim's extracted text - forms, query answers, and table cells.</p>
+          <p class="settings-help">What must appear in the claim's extracted text - form fields, query answers, table cells and section text. How it is looked for is up to the controls below.</p>
         </div>
-        <label class="settings-checkbox">
-          <input type="checkbox" name="fp_case_insensitive" id="fp_case_insensitive"
-                 {% if not edit_rule or edit_rule.rule_type != 'field_present' or edit_rule.config.case_insensitive %}checked{% endif %}>
-          <span>Case-insensitive</span>
-        </label>
-        <label class="settings-checkbox">
-          <input type="checkbox" name="fp_regex" id="fp_regex"
-                 {% if edit_rule and edit_rule.rule_type == 'field_present' and edit_rule.config.regex %}checked{% endif %}>
-          <span>Treat keyword as a regex pattern</span>
-        </label>
+        {% set fp_match = (edit_rule.config if edit_rule and edit_rule.rule_type == 'field_present' else None) | match_config('rule') %}
+        {{ match_controls('fp_', fp_match) }}
       </div>
 
       <div class="settings-field">

@@ -26,7 +26,7 @@ import re
 
 from flask import current_app
 
-from . import search
+from . import matching, search
 from .db import get_db
 
 # The tags classify.py works out from the image and its text. A custom tag
@@ -54,16 +54,54 @@ def can_manage(user):
 
 # --------------------------------------------------------------------- read
 
+def match_config(row):
+    """The matching controls stored on a tag row, as matching.py wants them.
+
+    A row written before the controls existed has the column defaults, which
+    are the new defaults - so an old tag reads as a new one rather than as a
+    special case anywhere downstream.
+    """
+    def column(name, default=None):
+        # Rows arrive as sqlite3.Row from the database and as plain dicts
+        # from callers building one by hand, and neither supports the other's
+        # way of asking for a column that may not be there.
+        try:
+            value = row[name]
+        except (KeyError, IndexError):
+            return default
+        return default if value is None else value
+
+    return matching.normalize({
+        "case_insensitive": not column("case_sensitive", 0),
+        "regex": column("match_regex", 1),
+        "exact": column("match_exact", 1),
+        "fuzzy": column("fuzzy_methods", ",".join(matching.TAG_DEFAULTS["fuzzy"])),
+        "fuzzy_threshold": column("fuzzy_threshold"),
+    }, matching.TAG_DEFAULTS)
+
+
+def _as_tag(row):
+    """A row as every caller wants it: the stored columns, plus the controls
+    they add up to, the phrases the pattern yields and a line describing
+    both. Built in one place so the edit form cannot show something different
+    from the list above it, which it did when only the list was enriched.
+    """
+    config = match_config(row)
+    return dict(row, match=config,
+                terms=matching.derive_terms(row["pattern"], config["regex"]),
+                summary=matching.describe(config))
+
+
 def list_tags():
     """Every tag, by name. Ordered so the rule form's checkboxes do not move
     around as tags are added."""
     rows = get_db().execute("SELECT * FROM doc_tags ORDER BY name COLLATE NOCASE").fetchall()
-    return [dict(row, terms=search.literal_terms(row["pattern"])) for row in rows]
+    return [_as_tag(row) for row in rows]
 
 
 def get_tag(tag_id):
     row = get_db().execute("SELECT * FROM doc_tags WHERE id=?", (tag_id,)).fetchone()
-    return dict(row) if row else None
+    return _as_tag(row) if row else None
 
 
 def tag_names():
@@ -73,7 +111,10 @@ def tag_names():
 def signature():
     """What the rollup cache keys on, so editing a tag's pattern recomputes the
     badges it affects. Covers everything that changes which pages match."""
-    return [(t["id"], t["name"], t["pattern"], t["case_sensitive"]) for t in list_tags()]
+    return [(t["id"], t["name"], t["pattern"], t["case_sensitive"],
+             t["match"]["regex"], t["match"]["exact"],
+             tuple(t["match"]["fuzzy"]), t["match"]["fuzzy_threshold"])
+            for t in list_tags()]
 
 
 # -------------------------------------------------------------------- write
@@ -93,13 +134,17 @@ def _validated(form, tag_id=None):
         raise DocTagError("Give the tag a pattern to look for.")
     if len(pattern) > MAX_PATTERN:
         raise DocTagError(f"Keep the pattern under {MAX_PATTERN} characters.")
+    config = matching.from_form(form, defaults=matching.TAG_DEFAULTS)
     try:
-        re.compile(pattern)
-    except re.error as exc:
-        # Caught here rather than at match time: a pattern that cannot compile
-        # would otherwise fail silently on every page, and the tag would simply
-        # never appear with nothing to say why.
+        # Caught here rather than at match time: a tag that cannot match would
+        # otherwise fail silently on every page, and simply never appear with
+        # nothing to say why. validate() also refuses the combination with
+        # every stage switched off, which is the other way to get that.
+        problem = matching.validate(pattern, config)
+    except search.InvalidKeywordPattern as exc:
         raise DocTagError(f"That is not a valid regular expression: {exc}") from exc
+    if problem:
+        raise DocTagError(problem)
 
     db = get_db()
     clash = db.execute(
@@ -112,7 +157,11 @@ def _validated(form, tag_id=None):
         "name": name,
         "description": (form.get("description") or "").strip() or None,
         "pattern": pattern,
-        "case_sensitive": 1 if form.get("case_sensitive") in ("on", "1", "true", True) else 0,
+        "case_sensitive": 0 if config["case_insensitive"] else 1,
+        "match_regex": 1 if config["regex"] else 0,
+        "match_exact": 1 if config["exact"] else 0,
+        "fuzzy_methods": ",".join(config["fuzzy"]),
+        "fuzzy_threshold": config["fuzzy_threshold"],
     }
 
 
@@ -121,8 +170,12 @@ def create_tag(form, user=None):
     db = get_db()
     cursor = db.execute(
         "INSERT INTO doc_tags (name, description, pattern, case_sensitive, "
-        "created_by_user_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "match_regex, match_exact, fuzzy_methods, fuzzy_threshold, "
+        "created_by_user_id, created_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (fields["name"], fields["description"], fields["pattern"], fields["case_sensitive"],
+         fields["match_regex"], fields["match_exact"], fields["fuzzy_methods"],
+         fields["fuzzy_threshold"],
          user["id"] if user else None,
          (user["display_name"] or user["username"]) if user else None, _now()))
     db.commit()
@@ -135,10 +188,12 @@ def update_tag(tag_id, form):
     fields = _validated(form, tag_id=tag_id)
     db = get_db()
     db.execute(
-        "UPDATE doc_tags SET name=?, description=?, pattern=?, case_sensitive=?, updated_at=? "
+        "UPDATE doc_tags SET name=?, description=?, pattern=?, case_sensitive=?, "
+        "match_regex=?, match_exact=?, fuzzy_methods=?, fuzzy_threshold=?, updated_at=? "
         "WHERE id=?",
         (fields["name"], fields["description"], fields["pattern"], fields["case_sensitive"],
-         _now(), tag_id))
+         fields["match_regex"], fields["match_exact"], fields["fuzzy_methods"],
+         fields["fuzzy_threshold"], _now(), tag_id))
     db.commit()
 
 
@@ -179,47 +234,48 @@ def rules_using(name):
 # ------------------------------------------------------------------- match
 
 def compiled(tags=None):
-    """[(name, compiled_pattern, terms)] - prepared once per evaluation rather
-    than once per page, since a claim can run to hundreds of pages.
+    """[(name, pattern, config, prepared)] - prepared once per evaluation
+    rather than once per page, since a claim can run to hundreds of pages.
 
-    The terms travel with the pattern so a tag is matched exactly the way a
-    rule's regex keyword is: the pattern first, then the plain words inside it,
-    tolerantly. See search.literal_terms, which both of them call.
+    The controls travel with the pattern so a tag is matched exactly the way a
+    rule's keyword is: both hand the same three things to matching.run. See
+    matching.py, which is the only place that decides what finding means.
     """
     out = []
     for tag in (list_tags() if tags is None else tags):
-        flags = 0 if tag["case_sensitive"] else re.IGNORECASE
+        config = tag["match"] if "match" in tag else match_config(tag)
         try:
-            pattern = re.compile(tag["pattern"], flags)
-        except re.error:
-            # Saved patterns are validated, but a row edited by hand should not
-            # take the claims page down with it.
+            prepared = (matching.compile_pattern(tag["pattern"], config),
+                        matching.derive_terms(tag["pattern"], config["regex"]))
+        except search.InvalidKeywordPattern:
+            # Saved patterns are validated, but a row edited by hand should
+            # not take the claims page down with it.
             current_app.logger.warning("doc tag %r has an invalid pattern", tag["name"])
             continue
-        out.append((tag["name"], pattern, search.literal_terms(tag["pattern"])))
+        out.append((tag["name"], tag["pattern"], config, prepared))
     return out
 
 
 def tags_for_page(page, patterns):
     """The custom tags a page carries.
 
-    Matched exactly as a rule's regex keyword is matched, over the same
-    extracted text - form keys and values, query answers, table cells and
-    LAYOUT section lines - and in the same two stages:
+    Matched exactly as a rule's keyword is matched, over the same extracted
+    text - form keys and values, query answers, table cells and LAYOUT
+    section lines - by whichever of the stages the tag has switched on:
 
       1. the pattern, against each field on its own. Not against the page's
          text joined together: joined, ^ and $ mean the start and end of the
          whole page, so a tag written ^(final bill|invoice) could only ever
          match the page's first field, and a pattern could run across two
          unrelated fields that happen to be adjacent.
-      2. failing that, the plain words inside the pattern, tolerantly, so
-         "FlNAL BILL" - which a reviewer reads without noticing - still
-         carries the bill tag.
+      2. the plain phrases inside the pattern, looked for literally.
+      3. those same phrases, looked for tolerantly, so "FlNAL BILL" - which a
+         reviewer reads without noticing - still carries the bill tag.
 
-    Stage 2 compares lower-cased text, so a case-sensitive tag's pattern is
-    respected but its fallback is not. That is what a rule's regex keyword
-    already does, and a tag that behaved differently from the same pattern
-    written as a rule is the thing this is here to prevent.
+    The tolerant stages compare lower-cased text, so a case-sensitive tag's
+    pattern is respected but its fallback is not. That is what a rule's
+    keyword already does, and a tag that behaved differently from the same
+    words written as a rule is the thing this is here to prevent.
     """
     if not patterns:
         return set()
@@ -228,10 +284,8 @@ def tags_for_page(page, patterns):
         return set()
     documents = {"page": kvs}
     found = set()
-    for name, pattern, terms in patterns:
-        if search.matches_pattern(documents, pattern):
-            found.add(name)
-        elif terms and search.search_terms(documents, terms)["best"] is not None:
+    for name, pattern, config, prepared in patterns:
+        if matching.run(documents, pattern, config, prepared=prepared)["best"]:
             found.add(name)
     return found
 
@@ -241,8 +295,8 @@ def matches_for_page(page, patterns, file_name="page"):
 
     tags_for_page() answers whether the badge belongs on the page; this
     answers why, so a reviewer can check a tag instead of taking it on faith.
-    The two run the same two stages over the same primitives, so what is shown
-    here is necessarily what put the badge there.
+    Both run matching.run over the same primitives, so what is shown here is
+    necessarily what put the badge there.
 
     Deliberately not short-circuited, and deliberately not what the badge is
     computed from: this runs for one document when someone clicks its tag,
@@ -256,11 +310,9 @@ def matches_for_page(page, patterns, file_name="page"):
     documents = {file_name: kvs}
     locations = search.page_locations(page, file_name)
     found = {}
-    for name, pattern, terms in patterns:
-        hits = search.pattern_hits(documents, pattern, locations)
-        if not hits and terms:
-            hits = search.search_terms(documents, terms, locations)["matches"]
-        hits = _one_per_field(hits)
+    for name, pattern, config, prepared in patterns:
+        hits = _one_per_field(matching.run(documents, pattern, config,
+                                           locations, prepared)["matches"])
         if hits:
             found[name] = hits
     return found

@@ -663,3 +663,35 @@ a.ocr-lookup-link { color: var(--accent); text-decoration: underline; cursor: po
   max-height: 26rem; overflow: auto; white-space: pre-wrap;
   font-family: inherit; font-size: 0.86rem; line-height: 1.55;
 }
+
+/* The shared matching controls, on the rule form and the tag form. Indented
+   as a block so the four questions read as one group - which of them is on
+   is a single decision about how hard to look, not four unrelated boxes. */
+.match-controls {
+  margin: 0.4rem 0 0.2rem;
+  border-left: 3px solid var(--border);
+  padding-left: 0.85rem;
+}
+.match-controls .settings-help {
+  margin: 0.1rem 0 0.6rem 1.55rem;
+}
+.match-controls .settings-help.indented {
+  margin-left: 2.9rem;
+}
+.match-fuzzy {
+  margin: 0.5rem 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem 0.3rem;
+}
+.match-fuzzy legend {
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0 0.35rem;
+}
+.match-fuzzy > .settings-help:first-of-type {
+  margin-left: 0;
+}
+.match-fuzzy .settings-field {
+  margin-top: 0.6rem;
+}

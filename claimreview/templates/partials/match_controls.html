@@ -1,0 +1,66 @@
+{# How a typed pattern is looked for. One block, used by both the rule form
+   and the tag form, so the two screens cannot describe the same settings
+   differently. The names are prefixed because the rule form carries several
+   rule types at once; the tag form passes no prefix. See matching.py. #}
+{% macro match_controls(prefix, cfg) %}
+{% set p = prefix %}
+<div class="match-controls">
+  {# Says the boxes below were rendered, so one left unticked is an answer
+     and not an absence. See matching.from_form. #}
+  <input type="hidden" name="{{ p }}match_controls" value="1">
+  <label class="settings-checkbox">
+    <input type="checkbox" name="{{ p }}case_insensitive" {{ 'checked' if cfg.case_insensitive }}>
+    <span>Case-insensitive</span>
+  </label>
+  <p class="settings-help">On by default: OCR capitalisation is not dependable.</p>
+
+  <label class="settings-checkbox">
+    <input type="checkbox" name="{{ p }}regex" class="match-regex" {{ 'checked' if cfg.regex }}>
+    <span>Treat as a regex pattern</span>
+  </label>
+  <p class="settings-help">
+    Off means the text is looked for exactly as typed, so <code>.</code> and
+    <code>(</code> are just characters. On means it is a regular expression,
+    matched against each extracted field on its own - so <code>^</code> and
+    <code>$</code> are the start and end of one field, not of the page.
+  </p>
+
+  <label class="settings-checkbox">
+    <input type="checkbox" name="{{ p }}exact" class="match-exact" {{ 'checked' if cfg.exact }}>
+    <span>Exact match on the words inside it</span>
+  </label>
+  <p class="settings-help">
+    Splits on <code>|</code> and strips the regex syntax out of each branch,
+    then looks for those phrases literally. <code>(discharge summary|discharge\s+notes?)</code>
+    becomes <code>discharge summary</code> and <code>discharge note</code>.
+    Punctuation is ignored on both sides, so <code>FINAL BILL / C</code> still
+    matches <code>final bill</code>.
+  </p>
+
+  <fieldset class="match-fuzzy">
+    <legend>Also look for those phrases tolerantly</legend>
+    <p class="settings-help">
+      For OCR noise - a word a reviewer reads without noticing is garbled.
+      Each is tried in turn, and only if everything above it found nothing.
+      Leave all three off to require the text as written.
+    </p>
+    {% for key, label, help in fuzzy_methods %}
+    <label class="settings-checkbox">
+      <input type="checkbox" name="{{ p }}fuzzy_{{ key }}" {{ 'checked' if key in cfg.fuzzy }}>
+      <span>{{ label }}</span>
+    </label>
+    <p class="settings-help indented">{{ help }}</p>
+    {% endfor %}
+    <div class="settings-field">
+      <label for="{{ p }}fuzzy_threshold">Match threshold (%)</label>
+      <input type="number" id="{{ p }}fuzzy_threshold" name="{{ p }}fuzzy_threshold"
+             min="1" max="100" step="1" placeholder="{{ default_fuzzy_threshold }}"
+             value="{{ cfg.fuzzy_threshold or '' }}" style="width:7rem;">
+      <p class="settings-help">
+        How close a garbled rendering has to be before it counts. Higher is
+        stricter. Blank uses the instance setting ({{ default_fuzzy_threshold }}%).
+      </p>
+    </div>
+  </fieldset>
+</div>
+{% endmacro %}

@@ -65,6 +65,34 @@ def create_app(config_class=Config):
             return redirect(url_for("auth.login", next=request.full_path.rstrip("?")))
         return None
 
+    @app.template_filter("match_config")
+    def _match_config_filter(config, kind="rule"):
+        """A stored rule config (or a tag row, or nothing at all) as the
+        settings the shared controls render. Nothing means a new one, which
+        is how the two forms get their different defaults for the regex box
+        without either template knowing what the default is."""
+        from . import matching
+        defaults = matching.TAG_DEFAULTS if kind == "tag" else matching.RULE_DEFAULTS
+        return matching.normalize(config, defaults)
+
+    @app.template_filter("match_summary")
+    def _match_summary_filter(config):
+        from . import matching
+        return matching.describe(config)
+
+    @app.context_processor
+    def inject_match_controls():
+        """What the shared matching-controls block renders. Here rather than
+        passed by each route, because the same block appears on the rule form
+        and the tag form and the two must offer the same options."""
+        from . import matching, settings_store
+        try:
+            default = settings_store.get_settings()["FUZZY_MATCH_THRESHOLD"]
+        except Exception:
+            default = 80
+        return {"fuzzy_methods": matching.FUZZY_METHODS,
+                "default_fuzzy_threshold": default}
+
     @app.context_processor
     def inject_user():
         return {"current_user": users.current_user()}

@@ -18,7 +18,7 @@ import os
 from flask import current_app
 
 from . import (claim_extract, claim_scanner, claim_summary, classify, csv_data,
-               doc_tags, search, settings_store, users)
+               doc_tags, matching, search, settings_store, users)
 from .db import get_db
 
 RULE_TYPES = ("field_present", "field_consistency", "length_of_stay", "documents_present")
@@ -196,9 +196,8 @@ def _claim_procedure_codes(value):
 # preview opens at the start.
 
 
-# What a regex pattern means - the pattern itself, and the plain words
-# inside it for the tolerant stage - is shared with document tags, so the
-# two cannot drift apart. See search.literal_terms.
+# What a pattern means - which stages run, over what text, in what order -
+# is shared with document tags, so the two cannot drift apart. See matching.
 literal_terms = search.literal_terms
 MIN_SEARCH_TERM = search.MIN_SEARCH_TERM
 
@@ -483,33 +482,24 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         keyword = (config.get("keyword") or "").strip()
         if not keyword:
             return {"status": "no_data", "message": "No keyword configured"}
-        regex = bool(config.get("regex"))
-        case_insensitive = config.get("case_insensitive", True)
-        label = f"pattern '{keyword}'" if regex else f"'{keyword}'"
-        # A regex also searches for the plain words inside it, tolerantly, and
-        # the rule passes on either. Only for regex rules: a plain keyword is
-        # already matched literally and quietly loosening every one of those
-        # would change what existing rules mean. See literal_terms.
-        search_terms = literal_terms(keyword) if regex else []
-        if search_terms:
-            label += " (or " + ", ".join(repr(t) for t in search_terms) + " by search)"
+        # A rule written before these controls existed has none of their keys,
+        # so it takes the defaults - which is how an old rule ends up on the
+        # same footing as a new one rather than being a case of its own.
+        match_config = matching.normalize(config, matching.RULE_DEFAULTS)
+        try:
+            prepared = (matching.compile_pattern(keyword, match_config),
+                        matching.derive_terms(keyword, match_config["regex"]))
+        except search.InvalidKeywordPattern as exc:
+            raise ValueError(f"Invalid regex pattern: {exc}") from exc
+        label = f"pattern '{keyword}'" if match_config["regex"] else f"'{keyword}'"
+        # Only worth spelling out when the phrases differ from what was typed.
+        if prepared[1] and prepared[1] != [keyword]:
+            label += " (or " + ", ".join(repr(t) for t in prepared[1]) + ")"
 
         def run_search(subset, locations=None):
-            try:
-                found = search.search_keyword(subset, keyword, regex=regex,
-                                              case_insensitive=case_insensitive,
-                                              locations=locations)
-            except search.InvalidKeywordPattern as exc:
-                raise ValueError(f"Invalid regex pattern: {exc}") from exc
-            if found["best"] is not None:
-                return found
-            # The pattern did not match. Look for the words it is made of,
-            # tolerantly, so OCR noise in a word the reviewer can plainly see
-            # does not read as absent. The hit records that it was found this
-            # way, so a tolerant match is never mistaken for a pattern match on
-            # the claim page.
-            hit = search.search_terms(subset, search_terms, locations=locations)
-            return hit if hit["best"] is not None else found
+            # Every hit records which stage found it, so a tolerant match is
+            # never mistaken for the exact text on the claim page.
+            return matching.run(subset, keyword, match_config, locations, prepared)
 
     doc_page_hits = {}
     any_cached = False

@@ -200,6 +200,14 @@ CREATE TABLE IF NOT EXISTS doc_tags (
   description TEXT,
   pattern TEXT NOT NULL,
   case_sensitive INTEGER NOT NULL DEFAULT 0,
+  -- How the pattern is looked for. The same four controls a rule's keyword
+  -- has, meaning the same thing, so the two screens cannot disagree about
+  -- what the same words find. See matching.py.
+  match_regex INTEGER NOT NULL DEFAULT 1,
+  match_exact INTEGER NOT NULL DEFAULT 1,
+  fuzzy_methods TEXT NOT NULL DEFAULT 'whole',
+  -- NULL means the instance-wide FUZZY_MATCH_THRESHOLD setting.
+  fuzzy_threshold INTEGER,
   created_by_user_id INTEGER,
   created_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -312,6 +320,17 @@ _MIGRATED_COLUMNS = {
         # claims, so a hypothesis's claims are the claims of its runs and no
         # claim has to be re-matched against the criteria afterwards.
         "hypothesis_id": "INTEGER",
+    },
+    # Tags predating these columns were matched as a regex with a tolerant
+    # second look inside a field. The defaults put them on the shared controls
+    # instead, which is a deliberate change of behaviour: fuzzy "whole" is
+    # stricter than the "inside a field" they had, so a tag stops landing on a
+    # page where its word was only a fragment of a longer one.
+    "doc_tags": {
+        "match_regex": "INTEGER NOT NULL DEFAULT 1",
+        "match_exact": "INTEGER NOT NULL DEFAULT 1",
+        "fuzzy_methods": "TEXT NOT NULL DEFAULT 'whole'",
+        "fuzzy_threshold": "INTEGER",
     },
     # Rules predating this column were created when only an admin could make
     # one, so leaving them NULL is accurate: they belong to no individual and

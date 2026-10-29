@@ -1,3 +1,4 @@
+{% from 'partials/match_controls.html' import match_controls with context %}
 {% set t = edit_tag %}
 <h2 style="margin-top:2rem; font-size:1.1rem;">Document tags</h2>
 <p class="hint">
@@ -42,23 +43,14 @@
              value="{{ t.pattern if t else '' }}"
              placeholder="e.g. (final bill|bill of supply|invoice)">
       <p class="settings-help">
-        A regular expression, matched the same way a rule's regex keyword is matched, over the same
-        extracted text: form fields, query answers, table cells and section text, each field on its
-        own, so <code>^</code> and <code>$</code> mean the start and end of a value.
-        {#- The tolerant stage is the whole reason a tag finds real, OCR'd pages. -#}
-        <br>If the pattern itself does not match, the plain words inside it are looked up
-        tolerantly, so OCR noise in a word that is plainly on the page - <code>FlNAL BILL</code> -
-        still carries the tag. Words under 3 characters are matched exactly only.
+        What a page must contain to carry this tag, looked for in that page's extracted text:
+        form fields, query answers, table cells and section text, each field on its own.
+        A tag is matched exactly the way a rule's keyword is, by the same controls below, so
+        the same words cannot find one thing here and another in a rule.
       </p>
     </div>
 
-    <div class="settings-field">
-      <label class="settings-checkbox">
-        <input type="checkbox" name="case_sensitive" {{ 'checked' if t and t.case_sensitive }}>
-        <span>Case sensitive</span>
-      </label>
-      <p class="settings-help">Off by default, since OCR capitalisation is unreliable.</p>
-    </div>
+    {{ match_controls('', (t.match if t else None) | match_config('tag')) }}
 
     <div class="settings-actions">
       <button type="submit">{{ 'Save tag' if t else 'Add tag' }}</button>
@@ -79,8 +71,7 @@
       {% if tag.description %}<span class="doc-dir-path">{{ tag.description }}</span>{% endif %}
       <span class="doc-dir-path">
         <code>{{ tag.pattern }}</code>
-        {%- if tag.terms %} &middot; or {{ tag.terms|join(', ') }} by search{% endif %}
-        &middot; {{ 'case sensitive' if tag.case_sensitive else 'case insensitive' }}
+        &middot; {{ tag.summary }}
         {%- if tag.created_by %} &middot; by {{ tag.created_by }}{% endif %}
       </span>
     </span>

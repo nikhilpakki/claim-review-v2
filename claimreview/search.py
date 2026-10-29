@@ -394,6 +394,114 @@ def pattern_hits(documents, pattern, locations=None, method="regex"):
             for file_name, key, value, side in _pattern_hits(documents, pattern)]
 
 
+def exact_term_hits(documents, terms, locations=None, case_insensitive=True):
+    """Every field containing one of `terms` as written.
+
+    The phrases come from matching.derive_terms, so an alternation is already
+    one term per branch and this looks for each in turn. Compared on the same
+    normalized text the fuzzy stages use, so a field that OCR rendered with
+    odd punctuation - "FINAL BILL / C" - still matches "final bill".
+    """
+    locations = locations or {}
+    needles = []
+    for term in terms or []:
+        needle = _normalize_for_fuzzy((term or "").strip())
+        if needle:
+            needles.append((term, needle.lower() if case_insensitive else needle))
+    if not needles or not documents:
+        return []
+    hits = []
+    for record in _build_search_records(documents):
+        # _build_search_records lower-cases as it normalizes, which is what a
+        # case-sensitive search has to undo by going back to the raw text.
+        text = record["text"] if case_insensitive else _normalize_for_fuzzy(
+            record["key"] if record["matched_on"] == "key" else record["value"])
+        if not text:
+            continue
+        for term, needle in needles:
+            if needle in text:
+                loc = locations.get((record["file"], record["key"], record["value"]), {})
+                hits.append({"file": record["file"], "key": record["key"],
+                             "value": record["value"], "matched_on": record["matched_on"],
+                             "method": "exact", "term": term, "score": 100.0, **loc})
+                break
+    return hits
+
+
+def fuzzy_term_hits(documents, terms, method, locations=None, threshold=None):
+    """Every field one of `terms` is found in tolerantly, by one method.
+
+    The three answer genuinely different questions and are not degrees of one
+    another, which is why they are chosen rather than ordered:
+
+      whole    the phrase against the whole field (token_set_ratio), as the
+               Search tab asks it. "declaration" against "SKIN PREPARATION
+               FINDINGS" is 44.4 - a phrase buried in a sentence is not found.
+      partial  the phrase against the stretch of the field that best matches
+               it. Finds it buried, and is correspondingly looser.
+      soundex  the phrase against the field phonetically.
+    """
+    locations = locations or {}
+    cleaned = [t for t in ((term or "").strip() for term in terms or []) if t]
+    if not cleaned or not documents:
+        return []
+    if method == "partial":
+        hits = search_terms(documents, cleaned, locations,
+                            fuzzy_threshold=threshold)["matches"]
+        # search_terms predates there being a choice of method and labels its
+        # hits "fuzzy term". Named here so the three read alike wherever a hit
+        # is shown - the panel behind a tag badge says which one found it.
+        for hit in hits:
+            hit["method"] = "fuzzy partial"
+        return hits
+
+    settings = settings_store.get_settings()
+    if method == "soundex":
+        cutoff = (threshold / 100.0 if threshold
+                  else settings["SOUNDEX_TOKEN_OVERLAP_THRESHOLD"])
+    else:
+        cutoff = threshold if threshold else settings["FUZZY_MATCH_THRESHOLD"]
+
+    # The same guard search_terms applies, for the same reason: every scorer
+    # here will happily report a *fragment of the term* as the term when the
+    # field is shorter than it. token_set_ratio is the worst of them, because
+    # a field that is a subset of the query scores outright 100 - measured,
+    # "course in hospital" against a field reading "Hospital" is 100.0. The
+    # question has to stay "is this phrase in this text" rather than becoming
+    # "is this text a piece of this phrase".
+    length_pct = threshold if threshold else settings["FUZZY_MATCH_THRESHOLD"]
+    records = _build_search_records(documents)
+    hits = []
+    for term in cleaned:
+        query = _normalize_for_fuzzy(term.lower())
+        if not query:
+            continue
+        min_chars = len(query) * length_pct / 100.0
+        candidates = [record for record in records
+                      if record["text"] and len(record["text"]) >= min_chars]
+        if not candidates:
+            continue
+        if method == "soundex":
+            query_tokens = _soundex_tokens(query)
+            scored = ((record, round(_soundex_overlap_ratio(
+                query_tokens, _soundex_tokens(record["text"])) * 100, 1))
+                for record in candidates)
+            found = [(record, score) for record, score in scored
+                     if score >= cutoff * 100]
+        else:
+            texts = [record["text"] for record in candidates]
+            found = [(candidates[index], score) for _text, score, index
+                     in process.extract(query, texts, scorer=fuzz.token_set_ratio,
+                                        score_cutoff=cutoff, limit=None)]
+        for record, score in found:
+            loc = locations.get((record["file"], record["key"], record["value"]), {})
+            hits.append({"file": record["file"], "key": record["key"],
+                         "value": record["value"], "matched_on": record["matched_on"],
+                         "method": f"fuzzy {method}", "term": term,
+                         "score": float(score), **loc})
+    return hits
+
+
 def _whole_term_ratio(needle, text):
     """How well `needle` matches a stretch of `text` as long as itself.
 
