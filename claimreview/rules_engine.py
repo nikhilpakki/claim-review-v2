@@ -411,6 +411,51 @@ def _in_scope_pages_by_doc(docs, page_filter):
     return result
 
 
+def _out_of_scope_note(docs, page_filter):
+    """" - this rule's document scope left out N page(s)", or "".
+
+    A rule that searched part of a claim and found nothing must say which
+    part. Without this, "not found on this claim" reads as "not in this
+    claim" when it can equally mean "not where this rule was allowed to
+    look" - and the two call for opposite actions from the reviewer.
+
+    The case that prompted it: a rule scoped to a custom tag as well as a
+    page kind. A tag narrows by AND, not OR, so adding one to a rule already
+    scoped to document+photo restricts it to pages carrying that tag - which
+    is intended, and invisible in a message that only says "nothing matched".
+    """
+    if page_filter is None:
+        return ""
+    considered = _in_scope_pages_by_doc(docs, page_filter)
+    everything = _in_scope_pages_by_doc(docs, None)
+    skipped = (sum(len(pages) for pages in everything.values())
+               - sum(len(pages) for pages in considered.values()))
+    if skipped <= 0:
+        return ""
+    whole_docs = sum(1 for name in everything if name not in considered)
+    note = f" - this rule's document scope left out {skipped} page(s)"
+    if whole_docs:
+        note += f", {whole_docs} whole document(s) among them"
+    return note
+
+
+def describe_scope(configured):
+    """A rule's doc_scope_tags as something a reviewer can predict from.
+
+    Spelling the two kinds out separately, because they do not combine the
+    way a single comma-separated list suggests: the page kinds are what a
+    page may be, and a tag is an extra condition on top of them. Listing
+    "document, photo, ds" together reads as a third kind of page, which is
+    how a rule ends up quietly narrowed to nothing.
+    """
+    builtin, custom = _split_scope(configured or DEFAULT_DOC_SCOPE_TAGS)
+    kinds = [tag for tag in DOC_SCOPE_TAGS if tag in builtin]
+    summary = "page kinds: " + (", ".join(kinds) if kinds else "any")
+    if custom:
+        summary += "; and only pages tagged " + ", ".join(sorted(custom))
+    return summary
+
+
 def _doc_page_hits(doc, page_filter, run_search):
     """[(page_number, matched: bool, hit_or_None), ...] for one already-
     scanned doc dict's in-scope pages, using `run_search` (a closure built
@@ -532,8 +577,10 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
     if scope == "all_docs":
         missing = sorted(name for name, hit in doc_hit.items() if not hit)
         passed = not missing
+        scope_note = "" if passed else _out_of_scope_note(docs, page_filter)
         issues = [] if passed else [_issue(
-            f"Missing from {len(missing)} of {len(doc_hit)} document(s) ({page_scope_label} required)",
+            f"Missing from {len(missing)} of {len(doc_hit)} document(s) "
+            f"({page_scope_label} required){scope_note}",
             [_ref(name, name) for name in missing],
         )]
         # A passing all_docs rule gets a reference per document it was found
@@ -549,7 +596,8 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         return {
             "status": "pass" if passed else "fail",
             "message": (f"{label} found ({page_scope_label}) in all {len(doc_hit)} document(s)" if passed
-                        else f"{label} missing from {len(missing)} of {len(doc_hit)} document(s)"),
+                        else f"{label} missing from {len(missing)} of "
+                             f"{len(doc_hit)} document(s){scope_note}"),
             "issues": issues,
             "missing_documents": missing,
             "refs": pass_refs[:MAX_PASS_REFS],
@@ -574,10 +622,12 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
     # were searched are exactly what a reviewer wants to open to see for
     # themselves, so they are listed as whole-document references.
     searched = sorted(doc_hit)
+    scope_note = _out_of_scope_note(docs, page_filter)
     return {
         "status": "fail",
-        "message": f"{label} not found ({page_scope_label}) in any document",
-        "issues": [_issue(f"{label} not found in any of {len(searched)} searched document(s)",
+        "message": f"{label} not found ({page_scope_label}) in any document{scope_note}",
+        "issues": [_issue(f"{label} not found in any of {len(searched)} "
+                          f"searched document(s){scope_note}",
                           [_ref(name, name) for name in searched])],
         "match": None,
     }
@@ -958,19 +1008,21 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
     findings, truncated = extraction.extract(docs, compiled, cfg["groups"], page_filter)
     pattern_label = f"/{cfg['pattern']}/"
 
+    scope_note = _out_of_scope_note(docs, page_filter)
     if not findings:
         searched = sorted(in_scope)
         if cfg["fail_when_missing"]:
             return {
                 "status": "fail",
                 "message": f"Nothing matched {pattern_label} in any of "
-                           f"{len(searched)} document(s)",
-                "issues": [_issue(f"{pattern_label} extracted nothing",
+                           f"{len(searched)} document(s){scope_note}",
+                "issues": [_issue(f"{pattern_label} extracted nothing{scope_note}",
                                   [_ref(name, name) for name in searched])],
                 "extracted_values": [],
             }
         return {"status": "no_data",
-                "message": f"Nothing matched {pattern_label} on this claim",
+                "message": f"Nothing matched {pattern_label} in the "
+                           f"{len(searched)} document(s) searched{scope_note}",
                 "extracted_values": []}
 
     distinct = _distinct_values(findings)
@@ -1013,7 +1065,7 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
     return {
         "status": "fail",
         "message": f"No extracted value {test} - found "
-                   f"{len(distinct)} value(s){note}",
+                   f"{len(distinct)} value(s){note}{scope_note}",
         "issues": [_issue(f"None of the extracted values {test}",
                           [_extract_ref(finding, why)
                            for finding, why in rejected[:MAX_EXTRACT_REFS]])],

@@ -19,7 +19,7 @@
         {%- endif -%}
         ; procedure code(s): {{ (rule.config.procedure_codes or ['All'])|join(', ') }}
         {%- if rule.rule_type != 'documents_present' %}
-        ; doc types: {{ (rule.config.doc_scope_tags or ['document', 'photo'])|join(', ') }}
+        ; {{ rule.config.doc_scope_tags | scope_summary }}
         {%- endif %}
         {#- Anyone can write a rule now, so whose it is is worth showing. Rules
             that predate authorship have no author on purpose - they were

@@ -80,6 +80,13 @@ def create_app(config_class=Config):
         from . import matching
         return matching.describe(config)
 
+    @app.template_filter("scope_summary")
+    def _scope_summary_filter(tags):
+        """A rule's document scope, spelled out by the engine that enforces
+        it - so the list cannot describe a narrowing the rule does not do."""
+        from . import rules_engine
+        return rules_engine.describe_scope(tags)
+
     @app.template_filter("extract_config")
     def _extract_config_filter(config):
         """A stored extraction config, or nothing at all for a new rule, with
