@@ -64,7 +64,7 @@ from .db import get_db
 #    all (an empty built-in set was read as a subset test), so it reported
 #    "No in-scope pages found" everywhere. Those rules now evaluate, and a
 #    claim's violation count can change.
-ROLLUP_VERSION = 7
+ROLLUP_VERSION = 8
 
 
 def _digest(*parts):

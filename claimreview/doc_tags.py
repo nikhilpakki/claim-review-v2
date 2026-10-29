@@ -267,19 +267,30 @@ def matches_for_page(page, patterns, file_name="page"):
 
 
 def _one_per_field(hits):
-    """Collapse the two directions a form field is searched from.
+    """One finding per piece of text that matched, however often it is paired.
+
+    The finding is the text the tag matched, so that is what it is counted by.
+    Two things otherwise report the same match several times over:
 
     page_kv_dict indexes a form pair both ways round, so a pattern matching
-    "DECLARATION CERTIFICATE" is reported once with it as the key and once
-    with it as the value of the reversed pair. The search box has always shown
-    both and they are each true; in a panel explaining one badge they read as
-    two separate findings, which is simply wrong. The first is kept, which is
-    the pair the way Textract gave it.
+    "DECLARATION CERTIFICATE" is found once with it as the key and once as the
+    value of the reversed pair. Both are true, and in a panel explaining one
+    badge they read as two separate findings, which is simply wrong.
+
+    A key also repeats once per value Textract paired it with. A heading
+    matched on the key side, sitting above twenty rows, is one finding about
+    that heading - not twenty findings that happen to quote twenty unrelated
+    values beside it.
+
+    The first of each is kept, which is the pair the way Textract gave it.
     """
     seen, out = set(), []
     for hit in hits:
-        fingerprint = (hit.get("page_number"),
-                       frozenset((hit.get("key") or "", hit.get("value") or "")))
+        # The side is deliberately not part of this. A pair indexed both ways
+        # round reports the same text once as a key and once as a value, and
+        # those are one finding, not two.
+        matched = hit["key"] if hit.get("matched_on") == "key" else hit["value"]
+        fingerprint = (hit.get("page_number"), matched or "")
         if fingerprint in seen:
             continue
         seen.add(fingerprint)

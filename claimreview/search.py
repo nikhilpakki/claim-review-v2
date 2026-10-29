@@ -394,6 +394,41 @@ def pattern_hits(documents, pattern, locations=None, method="regex"):
             for file_name, key, value, side in _pattern_hits(documents, pattern)]
 
 
+def _whole_term_ratio(needle, text):
+    """How well `needle` matches a stretch of `text` as long as itself.
+
+    partial_ratio scores the best window of *any* length up to the term's, so
+    a fragment of the term scores as the whole of it. Measured, against a
+    threshold of 80:
+
+        declaration  SKIN PREPARATION      eparation    80.0   as a fragment
+        bill         BILIRUBIN             bil          85.7   as a fragment
+
+    Neither word is on the page, and a reviewer reading it can see so. The
+    discount comes from the window being shorter than the term - the missing
+    letters are simply not charged for.
+
+    Measuring against windows the length of the term charges for them, while
+    still costing the dropped and garbled letters this stage exists for
+    nothing like enough to lose them:
+
+        certificate  CERTlFlCATE OF DEATH  certlflcate  81.8   found
+        declaration  DECLARATlON CERTIF..  declaratlon  90.9   found
+        operative    inter-0perative find  0perative    88.9   found
+        operative    oprative note attach  oprative n   88.9   found
+        declaration  SKIN PREPARATION      preparation  72.7   not found
+        bill         BILIRUBIN             bili         75.0   not found
+
+    A text shorter than the term has no window of that length, so it is scored
+    whole - the truncated-field case that search_terms' min_chars guard bounds.
+    """
+    if len(text) <= len(needle):
+        return fuzz.ratio(needle, text)
+    width = len(needle)
+    return max(fuzz.ratio(needle, text[offset:offset + width])
+               for offset in range(len(text) - width + 1))
+
+
 def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
     """Find any of `terms` inside the extracted text, tolerating OCR noise.
 
@@ -432,15 +467,21 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
     # not match outright. score_cutoff lets rapidfuzz abandon a comparison that
     # cannot reach the threshold instead of scoring it fully.
     #
-    # min_chars is what keeps partial_ratio honest. It scores the best window
-    # of the longer string against the shorter one, so when the field is
-    # shorter than the term the roles reverse and a *fragment of the term*
-    # scores 100: "course in hospital" against a field reading "Hospital" is
-    # 100.0, and so is "final bill" against "bill". Requiring the field to be
-    # at least as long as the threshold says the term may be corrupted keeps
-    # the question "is this word in this text" from quietly becoming "is this
-    # text a piece of this word" - while still allowing the dropped letters
-    # this stage exists for ("oprative note attached" for "operative", 94.1).
+    # min_chars and _whole_term_ratio both guard the same failure, which
+    # partial_ratio has in two forms: it scores the best window of the longer
+    # string, so a *fragment of the term* can score as the whole term.
+    #
+    # min_chars covers the field being shorter than the term, where the roles
+    # reverse outright: "course in hospital" against a field reading
+    # "Hospital" is 100.0, and so is "final bill" against "bill".
+    #
+    # _whole_term_ratio covers the subtler form, where the field is long
+    # enough but the matched window inside it is not: "declaration" against
+    # "SKIN PREPARATION" is 80.0 on the window "eparation". A percentage
+    # threshold is what lets that through - OCR corrupts an absolute number of
+    # letters, so the longer the term, the more unrelated words a percentage
+    # admits. Scoring the term against a window its own length removes the
+    # discount, and is checked only once the cheap gate below has passed.
     prepared = []
     for term in cleaned:
         needle = _normalize_for_fuzzy(term.lower())
@@ -456,9 +497,11 @@ def search_terms(documents, terms, locations=None, fuzzy_threshold=None):
                     for term, needle, min_chars in prepared:
                         if len(normalized) < min_chars:
                             continue
-                        score = fuzz.partial_ratio(needle, normalized,
-                                                   score_cutoff=fuzzy_threshold)
-                        if not score:
+                        if not fuzz.partial_ratio(needle, normalized,
+                                                   score_cutoff=fuzzy_threshold):
+                            continue
+                        score = _whole_term_ratio(needle, normalized)
+                        if score < fuzzy_threshold:
                             continue
                         loc = locations.get((file_name, key, value), {})
                         hits.append({"file": file_name, "key": key, "value": value,
