@@ -147,9 +147,10 @@ def claim_row(claim, docs, settings, user_id, rules, rule_columns, claim_columns
     for rule in rules:
         result = verdicts.get(rule["id"]) or {}
         status = result.get("status")
-        # NA covers both "this rule does not apply to this claim" and "it could
-        # not be evaluated" - from a spreadsheet's point of view neither is a
-        # verdict, and the rule's own page explains which.
+        # NA covers "this rule does not apply to this claim", "it could not be
+        # evaluated", and an extraction-only rule, which reaches a value
+        # rather than a verdict - from a spreadsheet of verdicts' point of
+        # view none of the three is one, and the rule's own page says which.
         row[rule_columns[rule["id"]]] = {"pass": "PASS", "fail": "FAIL"}.get(status, "NA")
     return row
 

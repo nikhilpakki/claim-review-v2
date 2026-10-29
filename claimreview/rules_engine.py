@@ -18,14 +18,20 @@ import os
 from flask import current_app
 
 from . import (claim_extract, claim_scanner, claim_summary, classify, csv_data,
-               doc_tags, matching, search, settings_store, users)
+               doc_tags, extraction, matching, search, settings_store, users)
 from .db import get_db
 
-RULE_TYPES = ("field_present", "field_consistency", "length_of_stay", "documents_present")
+RULE_TYPES = ("field_present", "field_consistency", "length_of_stay",
+              "documents_present", "extract_value")
 # How many "here is where it was found" links a passing rule shows. A claim can
 # carry the same value on dozens of pages, and listing all of them buries the
 # result it is meant to support.
 MAX_PASS_REFS = 5
+# An extraction rule's whole output is the list of values, so it is allowed a
+# longer list than a pass needs references for - and a summary line that names
+# only the first few, because the list below it carries the rest.
+MAX_EXTRACT_REFS = 25
+MAX_EXTRACT_SUMMARY = 5
 # "document"/"photo"/"gps photo" are mutually exclusive (a page's single
 # content_type); "has face" is an independent, co-occurring tag (a page can
 # be e.g. both "photo" and "has face") - see _page_scope_tags below.
@@ -50,6 +56,11 @@ def _normalize_config(rule_type, config):
         # every page - document+photo (not gps photo) is the closest match
         # to that, and is also the requested default for new rules.
         config["doc_scope_tags"] = list(DEFAULT_DOC_SCOPE_TAGS)
+    if rule_type == "extract_value":
+        # Extraction arrived with every key it needs, so there is nothing
+        # historical to backfill - but a config hand-written through the API,
+        # or one whose pattern was edited down, still gets the full set.
+        config.update(extraction.normalize(config))
     if "page_scope" not in config:
         # Rules created before "every page" vs "any page" existed only ever
         # checked "found somewhere in the document" - that's any_page.
@@ -880,7 +891,138 @@ def _evaluate_documents_present(claim_id, docs, config, settings, ctx):
     }
 
 
+def _extract_ref(finding, note=None):
+    """One extracted value as a clickable reference.
+
+    The value leads, because that is what the reviewer came to read; the
+    document and page follow so they can go and check it.
+    """
+    page = finding.get("page_number")
+    where = f"{finding['file']} p{page}" if page else finding["file"]
+    label = f"'{finding['value']}' - {where}"
+    if note:
+        label += f" ({note})"
+    return _ref(label, finding["file"], page,
+                finding.get("value_bbox") or finding.get("key_bbox"))
+
+
+def _distinct_values(findings):
+    """The extracted values, de-duplicated across the whole claim and in the
+    order they were found. The per-finding list keeps one entry per page on
+    purpose - the same amount on two pages is two places to look - but a
+    summary line repeating it is just noise."""
+    seen, values = set(), []
+    for finding in findings:
+        folded = finding["value"].casefold()
+        if folded not in seen:
+            seen.add(folded)
+            values.append(finding["value"])
+    return values
+
+
+def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
+    """Report what a pattern finds, and optionally judge it.
+
+    Two rules in one, separated by the `validate` flag:
+
+      - Extraction only. Status 'extracted' - neither pass nor fail, and
+        never counted as a violation. The result is the list of values, each
+        linked to the page it was read from.
+      - Extraction then comparison. One extracted value satisfying the
+        comparison passes the rule; the claim is asked "is there a value here
+        that meets this", not "do all of them". A failing rule lists every
+        value it did find, so the reviewer sees what was rejected.
+
+    A claim the pattern finds nothing on is NO DATA, like any other rule with
+    nothing to check - unless `fail_when_missing` says absence is the finding.
+    """
+    cfg = extraction.normalize(config)
+    if not cfg["pattern"].strip():
+        return {"status": "no_data", "message": "No pattern configured"}
+    try:
+        compiled = extraction.validate(cfg)
+    except extraction.InvalidExtraction as exc:
+        # The form refuses these, so one reaching here was written another
+        # way. Reported rather than raised: one bad rule must not take the
+        # claim page down with it.
+        return {"status": "no_data", "message": str(exc)}
+
+    page_filter = _scope_page_filter(config, settings, ctx["content_types"],
+                                     ctx.get("tag_patterns"))
+    if not any(doc.get("cached_result") for doc in docs):
+        return {"status": "no_data", "message": "Claim hasn't been processed yet"}
+    in_scope = _in_scope_pages_by_doc(docs, page_filter)
+    if not in_scope:
+        return {"status": "no_data", "message": "No in-scope pages found for this claim"}
+
+    findings, truncated = extraction.extract(docs, compiled, cfg["groups"], page_filter)
+    pattern_label = f"/{cfg['pattern']}/"
+
+    if not findings:
+        searched = sorted(in_scope)
+        if cfg["fail_when_missing"]:
+            return {
+                "status": "fail",
+                "message": f"Nothing matched {pattern_label} in any of "
+                           f"{len(searched)} document(s)",
+                "issues": [_issue(f"{pattern_label} extracted nothing",
+                                  [_ref(name, name) for name in searched])],
+                "extracted_values": [],
+            }
+        return {"status": "no_data",
+                "message": f"Nothing matched {pattern_label} on this claim",
+                "extracted_values": []}
+
+    distinct = _distinct_values(findings)
+    note = (f" (stopped at {extraction.MAX_FINDINGS} matches - the pattern is "
+            "matching far more than it should)" if truncated else "")
+
+    if not cfg["validate"]:
+        shown = distinct[:MAX_EXTRACT_SUMMARY]
+        more = len(distinct) - len(shown)
+        summary = ", ".join(f"'{value}'" for value in shown)
+        if more > 0:
+            summary += f", +{more} more"
+        return {
+            "status": "extracted",
+            "message": f"{len(distinct)} value(s) extracted: {summary}{note}",
+            "issues": [],
+            "extracted_values": distinct,
+            "refs": [_extract_ref(finding) for finding in findings[:MAX_EXTRACT_REFS]],
+        }
+
+    test = f'{extraction.OPERATOR_LABELS[cfg["operator"]]} "{cfg["compare_value"]}"'
+    satisfied, rejected = [], []
+    for finding in findings:
+        ok, why = extraction.compare(finding["value"], cfg["operator"],
+                                     cfg["compare_value"], cfg["case_insensitive"])
+        (satisfied if ok else rejected).append((finding, why))
+
+    if satisfied:
+        first = satisfied[0][0]
+        page = first.get("page_number")
+        where = f"{first['file']} p{page}" if page else first["file"]
+        return {
+            "status": "pass",
+            "message": f"'{first['value']}' {test} ({where}){note}",
+            "issues": [],
+            "extracted_values": distinct,
+            "refs": [_extract_ref(finding)
+                     for finding, _why in satisfied[:MAX_PASS_REFS]],
+        }
+    return {
+        "status": "fail",
+        "message": f"No extracted value {test} - found "
+                   f"{len(distinct)} value(s){note}",
+        "issues": [_issue(f"None of the extracted values {test}",
+                          [_extract_ref(finding, why)
+                           for finding, why in rejected[:MAX_EXTRACT_REFS]])],
+        "extracted_values": distinct,
+    }
+
+
 _EVALUATORS = {
+    "extract_value": _evaluate_extract_value,
     "field_present": _evaluate_field_present,
     "field_consistency": _evaluate_field_consistency,
     "length_of_stay": _evaluate_length_of_stay,

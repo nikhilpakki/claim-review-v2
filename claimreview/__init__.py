@@ -80,6 +80,19 @@ def create_app(config_class=Config):
         from . import matching
         return matching.describe(config)
 
+    @app.template_filter("extract_config")
+    def _extract_config_filter(config):
+        """A stored extraction config, or nothing at all for a new rule, with
+        every key present - so the form never has to ask whether a setting
+        exists before rendering its control."""
+        from . import extraction
+        return extraction.normalize(config)
+
+    @app.template_filter("extract_summary")
+    def _extract_summary_filter(config):
+        from . import extraction
+        return extraction.describe(config)
+
     @app.context_processor
     def inject_match_controls():
         """What the shared matching-controls block renders. Here rather than

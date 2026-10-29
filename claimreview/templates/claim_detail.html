@@ -399,14 +399,14 @@ window.loadRules = function () {
         + `${escapeHtml(ref.label)}</a></li>`;
     }
 
-    function renderRefList(refs, items) {
+    function renderRefList(refs, items, limit) {
       // refs and items describe the same findings; refs is preferred because it
       // carries the location. items remains the fallback for anything that
       // predates it.
       const entries = (refs && refs.length)
         ? refs
         : (items || []).map((it) => ({ label: it, file: null, page: null }));
-      const shown = entries.slice(0, 8);
+      const shown = entries.slice(0, limit || 8);
       const extra = entries.length - shown.length;
       if (!shown.length) return '';
       return `<ul class="rule-issue-items">${shown.map(renderRef).join('')}`
@@ -420,13 +420,26 @@ window.loadRules = function () {
         </div>`).join('');
     }
 
+    // An extraction rule reports data, not a verdict: neither pass nor fail,
+    // and never counted in the claim's violation total. It gets a badge of its
+    // own rather than being folded into NO DATA, which would read as "this
+    // rule had nothing to say" when in fact it found the values it was asked
+    // for.
+    const RULE_BADGES = {
+      fail: ['tag-rule-violation', 'FAIL'],
+      pass: ['tag-pass', 'PASS'],
+      extracted: ['tag-extracted', 'EXTRACTED'],
+    };
+
     function renderRule(r) {
-      const cls = r.status === 'fail' ? 'tag-rule-violation' : (r.status === 'pass' ? 'tag-pass' : 'tag-nodata');
-      const label = r.status === 'fail' ? 'FAIL' : (r.status === 'pass' ? 'PASS' : 'NO DATA');
+      const [cls, label] = RULE_BADGES[r.status] || ['tag-nodata', 'NO DATA'];
+      // The values are the whole point of an extraction rule, so its list is
+      // not trimmed to the eight a verdict's supporting references get.
+      const limit = r.status === 'extracted' ? 25 : 8;
       const body = (r.issues && r.issues.length)
         ? renderIssues(r.issues)
         : `<p class="rule-message">${escapeHtml(r.message || '')}</p>`
-          + renderRefList(r.refs, null);
+          + renderRefList(r.refs, null, limit);
       return `<div class="rule-item">
         <div class="rule-item-header">
           <span class="rule-name">${escapeHtml(r.name)}</span>

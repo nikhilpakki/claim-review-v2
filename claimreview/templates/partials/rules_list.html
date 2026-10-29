@@ -12,6 +12,8 @@
           Consistency - {{ rule.config.concept }}{% if rule.config.compare_with_csv %} vs CSV "{{ rule.config.csv_field }}"{% endif %}{% if rule.config.skip_empty %}, skipping empty{% endif %}, scope: {{ rule.config.page_scope or 'any_page' }} of {{ rule.config.scope or 'any_doc' }}
         {%- elif rule.rule_type == 'length_of_stay' -%}
           Length of stay - {{ rule.config.csv_admission_field }} / {{ rule.config.csv_discharge_field }}{% if rule.config.max_los_days %}, max {{ rule.config.max_los_days }}d{% endif %}
+        {%- elif rule.rule_type == 'extract_value' -%}
+          {{ rule.config | extract_summary }}
         {%- elif rule.rule_type == 'documents_present' -%}
           Declared documents present{% if rule.config.check_investigation_attachments %} + investigation attachments{% endif %}{% if rule.config.required_types %}, requiring: {{ rule.config.required_types|join(', ') }}{% endif %}
         {%- endif -%}

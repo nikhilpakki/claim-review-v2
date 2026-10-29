@@ -26,6 +26,7 @@
         <option value="field_consistency" {% if edit_rule and edit_rule.rule_type == 'field_consistency' %}selected{% endif %}>Field consistency across documents</option>
         <option value="length_of_stay" {% if edit_rule and edit_rule.rule_type == 'length_of_stay' %}selected{% endif %}>Length of stay / admission &amp; discharge dates</option>
         <option value="documents_present" {% if edit_rule and edit_rule.rule_type == 'documents_present' %}selected{% endif %}>Declared documents present in the folder</option>
+        <option value="extract_value" {% if edit_rule and edit_rule.rule_type == 'extract_value' %}selected{% endif %}>Extract a value (optionally validate it)</option>
       </select>
     </div>
 
@@ -163,6 +164,94 @@
           to only check that whatever the claim declares is actually present.
         </p>
       </div>
+    </div>
+
+    {% set ex = (edit_rule.config if edit_rule and edit_rule.rule_type == 'extract_value' else None) | extract_config %}
+    <div class="rule-type-fields" data-for="extract_value" style="display:none;">
+      <p class="settings-help">
+        Pulls values out of the claim's extracted text rather than asking whether something is
+        there. On its own it reports what it found and never passes or fails, so it adds nothing
+        to a claim's violation count. Tick "Validate the extracted value" to turn what it found
+        into a verdict.
+      </p>
+      <div class="settings-field">
+        <label for="ex_pattern">Pattern to extract with</label>
+        <input type="text" id="ex_pattern" name="ex_pattern"
+               placeholder="e.g. (?:total|net)\s*amount\D{0,8}([\d,]+)"
+               value="{{ ex.pattern }}"
+               style="width:100%; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-family:var(--mono, monospace);">
+        <p class="settings-help">
+          Always a regular expression - there is no tolerant stage here, because a fuzzy match has
+          nothing to hand back but the field it landed in. Run against each extracted field on its
+          own <em>and</em> against each field joined to its label, so
+          <code>total amount\D{0,8}([\d,]+)</code> reaches the number printed beside
+          <code>TOTAL AMOUNT</code>.
+        </p>
+      </div>
+
+      <label class="settings-checkbox">
+        <input type="checkbox" name="ex_case_insensitive" {{ 'checked' if ex.case_insensitive }}>
+        <span>Case-insensitive</span>
+      </label>
+      <p class="settings-help">On by default: OCR capitalisation is not dependable. Also applies to the text comparisons below.</p>
+
+      <div class="settings-field">
+        <label for="ex_groups">Which part of the match to take</label>
+        <select id="ex_groups" name="ex_groups" multiple size="4"
+                style="width:100%; padding:0.4rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          {% for n in extract_group_numbers %}
+          <option value="{{ n }}" {% if n in ex.groups %}selected{% endif %}>
+            {{ 'the whole match' if n == 0 else 'capture group ' ~ n }}
+          </option>
+          {% endfor %}
+        </select>
+        <p class="settings-help">
+          Group 0 is the whole match, and is what a pattern with no brackets in it can offer.
+          Add a bracketed group to take just the part inside it - with
+          <code>amount\D{0,8}([\d,]+)</code>, group 1 is the number alone. Pick more than one and
+          each is extracted separately. Only the groups your pattern actually has are offered.
+        </p>
+      </div>
+
+      <label class="settings-checkbox">
+        <input type="checkbox" name="ex_validate" id="ex_validate" {{ 'checked' if ex.validate }}>
+        <span>Validate the extracted value</span>
+      </label>
+      <div class="ex-validate-fields" style="display:none;">
+        <div class="settings-field">
+          <label for="ex_operator">Passes when the extracted value&hellip;</label>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <select id="ex_operator" name="ex_operator"
+                    style="flex:1 1 12rem; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+              {% for kind, label in [('number', 'Compared as a number'), ('text', 'Compared as text')] %}
+              <optgroup label="{{ label }}">
+                {% for key, op_label, op_kind in extract_operators %}{% if op_kind == kind %}
+                <option value="{{ key }}" {% if ex.operator == key %}selected{% endif %}>{{ op_label }}</option>
+                {% endif %}{% endfor %}
+              </optgroup>
+              {% endfor %}
+            </select>
+            <input type="text" id="ex_compare_value" name="ex_compare_value" placeholder="e.g. 150000"
+                   value="{{ ex.compare_value }}"
+                   style="flex:1 1 10rem; padding:0.5rem 0.7rem; border:1px solid var(--border-strong); border-radius:var(--radius-sm);">
+          </div>
+          <p class="settings-help">
+            One extracted value satisfying this passes the rule - the question asked is "is there a
+            value here that meets this", not "do all of them". A failing rule lists every value it
+            did find, so you can see what was rejected. A number comparison reads the first number
+            out of the value, so <code>Rs. 1,24,500/-</code> compares as 124500.
+          </p>
+        </div>
+      </div>
+
+      <label class="settings-checkbox">
+        <input type="checkbox" name="ex_fail_when_missing" {{ 'checked' if ex.fail_when_missing }}>
+        <span>Fail when nothing is extracted</span>
+      </label>
+      <p class="settings-help">
+        Off by default: a claim the pattern finds nothing on reports NO DATA, the same as every
+        other rule with nothing to check. Tick it when the value's absence is itself the finding.
+      </p>
     </div>
 
     <datalist id="csv-fields">

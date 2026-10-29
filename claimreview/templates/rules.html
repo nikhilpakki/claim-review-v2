@@ -39,6 +39,49 @@ window.initRulesPage = function () {
     syncFpMode();
   }
 
+  // ------------------------------------------------- extraction controls
+  const exPattern = document.getElementById('ex_pattern');
+  const exGroups = document.getElementById('ex_groups');
+  // How many capture groups a pattern has, without running it against
+  // anything: alternating it with an empty branch makes it match the empty
+  // string, and the match then has one entry per group. null means the
+  // pattern does not compile yet - half-typed - so nothing is hidden.
+  function groupCount(source) {
+    try {
+      return new RegExp(source + '|').exec('').length - 1;
+    } catch (err) {
+      return null;
+    }
+  }
+  function syncGroups() {
+    const count = groupCount(exPattern.value);
+    Array.from(exGroups.options).forEach((opt) => {
+      const usable = count === null || Number(opt.value) <= count;
+      opt.hidden = !usable;
+      opt.disabled = !usable;
+      if (!usable) opt.selected = false;
+    });
+    // Never leave nothing selected: a rule with no group extracts nothing,
+    // and group 0 is what the server falls back to anyway.
+    if (!Array.from(exGroups.options).some((o) => o.selected)) {
+      exGroups.options[0].selected = true;
+    }
+  }
+  if (exPattern && exGroups) {
+    exPattern.addEventListener('input', syncGroups);
+    syncGroups();
+  }
+
+  const exValidate = document.getElementById('ex_validate');
+  const exValidateFields = document.querySelector('.ex-validate-fields');
+  if (exValidate && exValidateFields) {
+    const syncValidate = () => {
+      exValidateFields.style.display = exValidate.checked ? '' : 'none';
+    };
+    exValidate.addEventListener('change', syncValidate);
+    syncValidate();
+  }
+
   const pcAll = document.getElementById('pc_all');
   const pcCodes = document.getElementById('pc_codes');
   function syncPc() {

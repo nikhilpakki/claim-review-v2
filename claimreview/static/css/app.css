@@ -211,6 +211,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .tag-rule-violation { background: #fecaca; color: #7f1d1d; }
 .tag-pass { background: #dcfce7; color: #166534; }
 .tag-nodata { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+/* An extraction rule's badge: data, not a verdict - deliberately neither
+   the green of a pass nor the red of a failure. */
+.tag-extracted { background: #dbeafe; color: #1e3a8a; }
 
 /* ---------------------------------------------------------------- claims list */
 

@@ -2,7 +2,8 @@ from urllib.parse import quote
 
 from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
-from .. import csv_data, doc_tags, matching, procedure_codes, rules_engine, users
+from .. import (csv_data, doc_tags, extraction, matching, procedure_codes,
+                rules_engine, users)
 
 bp = Blueprint("rules", __name__)
 
@@ -51,6 +52,8 @@ def _rules_context(**extra):
         "query_aliases": [q["Alias"] for q in current_app.config["DEFAULT_QUERIES"]],
         "procedure_codes": procedure_codes.list_procedure_codes(),
         "doc_scope_tags": rules_engine.DOC_SCOPE_TAGS,
+        "extract_operators": extraction.OPERATORS,
+        "extract_group_numbers": list(range(extraction.MAX_GROUPS + 1)),
         # The admin's own tags, listed separately in the form because they
         # narrow a rule differently - see partials/rule_form.html.
         "custom_doc_tags": doc_tags.list_tags(),
@@ -162,6 +165,21 @@ def _config_from_form(form, rule_type):
             "max_los_days": int(max_los) if max_los.isdigit() else None,
             "compare_with_extracted": form.get("los_compare_with_extracted") == "on",
         }
+    elif rule_type == "extract_value":
+        config = {
+            "pattern": (form.get("ex_pattern") or "").strip(),
+            "case_insensitive": form.get("ex_case_insensitive") == "on",
+            "groups": [int(g) for g in form.getlist("ex_groups") if g.isdigit()]
+                      or list(extraction.DEFAULT_GROUPS),
+            "validate": form.get("ex_validate") == "on",
+            "operator": form.get("ex_operator") or extraction.DEFAULT_OPERATOR,
+            "compare_value": (form.get("ex_compare_value") or "").strip(),
+            "fail_when_missing": form.get("ex_fail_when_missing") == "on",
+        }
+        # Refused here rather than at the reviewer reading a claim: an
+        # unrunnable pattern is a mistake on this form, and this is the only
+        # screen that can say so while it is still being typed.
+        extraction.validate(config)
     elif rule_type == "documents_present":
         required = (form.get("dp_required_types") or "").replace("\r", "")
         config = {
@@ -226,7 +244,12 @@ def clear_data():
 def create_rule():
     name = (request.form.get("name") or "").strip()
     rule_type = request.form.get("rule_type")
-    config = _config_from_form(request.form, rule_type)
+    try:
+        config = _config_from_form(request.form, rule_type)
+    except ValueError as exc:
+        if _is_ajax():
+            return _fragments(status="error", rule_error=str(exc)), 400
+        return render_template("rules.html", **_rules_context(rule_error=str(exc))), 400
 
     if config is None:
         error = "Choose a rule type."
@@ -257,7 +280,13 @@ def update_rule(rule_id):
 
     name = (request.form.get("name") or "").strip()
     rule_type = request.form.get("rule_type")
-    config = _config_from_form(request.form, rule_type)
+    try:
+        config = _config_from_form(request.form, rule_type)
+    except ValueError as exc:
+        if _is_ajax():
+            return _fragments(status="error", edit_rule=rule, rule_error=str(exc)), 400
+        return render_template("rules.html",
+                               **_rules_context(edit_rule=rule, rule_error=str(exc))), 400
 
     if config is None:
         error = "Choose a rule type."
