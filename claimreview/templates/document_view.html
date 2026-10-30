@@ -92,6 +92,19 @@
     </table>
     {% endfor %}
     {% endif %}
+
+    {#- The narrative blocks LAYOUT found. Prose yields no form pair and no
+        table cell, so a page that is nothing but text looked empty here. -#}
+    {% set sections = page_data.sections | page_sections %}
+    {% if sections %}
+    <h3>Sections on this page ({{ sections|length }})</h3>
+    {% for section in sections %}
+    <div class="doc-section">
+      <h4 class="doc-section-title">{{ section.title }}</h4>
+      {% if section.text %}<p class="doc-section-text">{{ section.text }}</p>{% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
   </div>
 </div>
 {% endif %}

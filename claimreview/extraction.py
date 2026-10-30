@@ -151,7 +151,11 @@ def text_units(page, file_name):
         for value in values:
             value = (value or "").strip()
             location = locations.get((file_name, key, value), base)
-            for text in (key, value, f"{key} {value}".strip()):
+            # Joined first, deliberately. A value reached through both its
+            # own unit and the joined one is deduplicated down to whichever
+            # came first, and "UHID PB-11-22" says where the value was read
+            # from while the bare "PB-11-22" says only that it was read.
+            for text in (f"{key} {value}".strip(), key, value):
                 if text:
                     units.setdefault(text, location)
     for table in page.get("tables", []):

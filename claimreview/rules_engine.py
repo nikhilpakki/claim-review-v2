@@ -457,10 +457,16 @@ def describe_scope(configured):
 
 
 def _doc_page_hits(doc, page_filter, run_search):
-    """[(page_number, matched: bool, hit_or_None), ...] for one already-
-    scanned doc dict's in-scope pages, using `run_search` (a closure built
-    by the caller, e.g. keyword or CSV-value matching) against that page's
-    own extracted text alone - never text from a different page."""
+    """[(page_number, matched: bool, hit_or_None, [hit, ...]), ...] for one
+    already-scanned doc dict's in-scope pages, using `run_search` (a closure
+    built by the caller, e.g. keyword or CSV-value matching) against that
+    page's own extracted text alone - never text from a different page.
+
+    The fourth item is every hit on that page, not just the strongest. The
+    search already had them - it sorts them to pick the best - and a verdict
+    that names one place out of nine is not checkable, which is what the
+    matches table fixes.
+    """
     cached = doc.get("cached_result")
     if not cached:
         return []
@@ -472,7 +478,8 @@ def _doc_page_hits(doc, page_filter, run_search):
         # The locations index is what lets a hit be turned into a link that
         # opens the preview on this page with the matching field boxed.
         locations = search.page_locations(page, doc["rel_path"]) if kvs else {}
-        result = run_search({doc["rel_path"]: kvs}, locations) if kvs else {"best": None}
+        result = run_search({doc["rel_path"]: kvs}, locations) if kvs else {
+            "best": None, "matches": []}
         best = result["best"]
         if best is not None and best.get("page_number") is None:
             # Queries, table cells and section lines have no geometry, so they
@@ -480,8 +487,86 @@ def _doc_page_hits(doc, page_filter, run_search):
             # known here, and without it a PASS cannot link anywhere.
             best = {**best, "page_number": page["page_number"],
                     "image_rel": page.get("image_rel")}
-        results.append((page["page_number"], best is not None, best))
+        results.append((page["page_number"], best is not None, best,
+                        result.get("matches") or []))
     return results
+
+
+# A verdict is a summary; this is the working underneath it. "Found in
+# BILL.jpg p1" answers whether the rule passed but not whether it passed for
+# the right reason, and a reviewer checking a claim needs the second. Every
+# rule that finds things in documents therefore carries the same table: which
+# document, what was matched there, and how many times.
+#
+# Rows beyond this are dropped rather than rendered: a loose pattern on a
+# long claim can match hundreds of fields, and a table that long is not read,
+# it is scrolled past. The total above it stays honest.
+MAX_MATCH_ROWS = 50
+
+
+def _match_table(entries, limit=MAX_MATCH_ROWS):
+    """{'rows', 'total', 'documents', 'shown', 'truncated'} from an iterable
+    of (file, page, text, context, bbox, method).
+
+    `text` is what matched; `context` is the other side of the field it sat
+    in, kept separate rather than glued on because which half matched is
+    exactly what a reviewer is checking.
+
+    One row per document per distinct matched text, counted by page. The same
+    text reached twice on one page - a form pair is indexed from both ends, so
+    this is the normal case, not an edge one - is one finding about that page,
+    the same rule doc_tags applies to its badges. The same text on two pages
+    is two, because that is the claim repeating itself.
+    """
+    rows, seen = {}, set()
+    for file_name, page, text, context, bbox, method in entries:
+        text = (text or "").strip()
+        if not text:
+            continue
+        folded = text.casefold()
+        if (file_name, page, folded) in seen:
+            continue
+        seen.add((file_name, page, folded))
+        row = rows.get((file_name, folded))
+        if row is None:
+            row = rows[(file_name, folded)] = {
+                "file": file_name, "text": text, "context": (context or "").strip(),
+                "method": method, "count": 0, "pages": [],
+                "page": page, "bbox": bbox,
+            }
+        row["count"] += 1
+        if page is not None and page not in row["pages"]:
+            row["pages"].append(page)
+    ordered = sorted(rows.values(), key=lambda r: (r["file"], -r["count"], r["text"]))
+    for row in ordered:
+        row["pages"].sort()
+    return {
+        "rows": ordered[:limit],
+        "shown": min(len(ordered), limit),
+        "total_rows": len(ordered),
+        "total": sum(row["count"] for row in ordered),
+        "documents": len({row["file"] for row in ordered}),
+        "truncated": len(ordered) > limit,
+    }
+
+
+def _hit_entries(doc_page_hits):
+    """(file, page, text, context, bbox, method) for every keyword/value hit.
+
+    The matched side is read the way doc_tags reads it - key when the hit was
+    on a key, value otherwise - so the table and the tag badges never disagree
+    about what a page matched.
+    """
+    for file_name, pages in doc_page_hits.items():
+        for page_number, _matched, _best, hits in pages:
+            for hit in hits:
+                on_key = hit.get("matched_on") == "key"
+                text = hit.get("key") if on_key else hit.get("value")
+                context = hit.get("value") if on_key else hit.get("key")
+                bbox = (hit.get("key_bbox") if on_key else hit.get("value_bbox")) \
+                    or hit.get("value_bbox") or hit.get("key_bbox")
+                yield (file_name, hit.get("page_number") or page_number,
+                       text, context, bbox, hit.get("method"))
 
 
 def _doc_hit(page_hits, page_scope):
@@ -491,7 +576,7 @@ def _doc_hit(page_hits, page_scope):
     the document has no in-scope pages at all - it's excluded, not failing."""
     if not page_hits:
         return None
-    matched_flags = [matched for _, matched, _ in page_hits]
+    matched_flags = [matched for _, matched, _hit, _all in page_hits]
     return all(matched_flags) if page_scope == "all_pages" else any(matched_flags)
 
 
@@ -573,6 +658,10 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
 
     doc_hit = {name: _doc_hit(hits, page_scope) for name, hits in doc_page_hits.items()}
     page_scope_label = "every page" if page_scope == "all_pages" else "any page"
+    # Carried on the fail as well as the pass: a rule that wanted the value in
+    # every document and found it in three of five is asking the reviewer to
+    # judge the other two, which needs the three in front of them.
+    matches = _match_table(_hit_entries(doc_page_hits))
 
     if scope == "all_docs":
         missing = sorted(name for name, hit in doc_hit.items() if not hit)
@@ -589,7 +678,7 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         pass_refs = []
         if passed:
             for name in sorted(doc_hit):
-                hit = next((h for _, matched, h in doc_page_hits[name] if matched and h), None)
+                hit = next((h for _, matched, h, _all in doc_page_hits[name] if matched and h), None)
                 page = (hit or {}).get("page_number")
                 pass_refs.append(_ref(f"{name} p{page}" if page else name, name, page,
                                       (hit or {}).get("value_bbox") or (hit or {}).get("key_bbox")))
@@ -601,11 +690,12 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
             "issues": issues,
             "missing_documents": missing,
             "refs": pass_refs[:MAX_PASS_REFS],
+            "matches": matches,
         }
 
     matched_doc = next((name for name, hit in doc_hit.items() if hit), None)
     if matched_doc:
-        first_hit = next(hit for _, matched, hit in doc_page_hits[matched_doc] if matched)
+        first_hit = next(hit for _, matched, hit, _all in doc_page_hits[matched_doc] if matched)
         page = first_hit.get("page_number")
         where = f"{matched_doc} p{page}" if page else matched_doc
         return {
@@ -617,6 +707,7 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
             # only checkable if you can go and look at where.
             "refs": [_ref(where, matched_doc, page,
                           first_hit.get("value_bbox") or first_hit.get("key_bbox"))],
+            "matches": matches,
         }
     # Not found anywhere. There is no page to point at, but the documents that
     # were searched are exactly what a reviewer wants to open to see for
@@ -630,6 +721,7 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
                           f"searched document(s){scope_note}",
                           [_ref(name, name) for name in searched])],
         "match": None,
+        "matches": matches,
     }
 
 
@@ -731,6 +823,11 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
         "message": ("; ".join(iss["summary"] for iss in issues) if issues
                     else f"{concept} is consistent across {len(occurrences)} occurrence(s)"),
         "issues": issues,
+        # Every document the concept was read from, with how often - which is
+        # the evidence behind both "they agree" and "they do not".
+        "matches": _match_table(
+            (occ["file"], occ["page_number"], occ["answer"], concept, None, "query")
+            for occ in occurrences),
         "distinct_values": distinct_values,
         "occurrences": occurrences, "csv_value": csv_value,
         # Where the agreeing values were read from, so a PASS is checkable too.
@@ -1026,6 +1123,15 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
                 "extracted_values": []}
 
     distinct = _distinct_values(findings)
+    # The values grouped by document, with counts - the same table the keyword
+    # rules carry, so one panel does not have two ways of showing "where".
+    matches = _match_table(
+        (finding["file"], finding["page_number"], finding["value"],
+         # A pattern that matched a field containing nothing but the value
+         # has no context to add, and "'36' in '36'" is worse than silence.
+         "" if finding["source"].strip() == finding["value"] else finding["source"],
+         finding.get("value_bbox") or finding.get("key_bbox"), "regex")
+        for finding in findings)
     note = (f" (stopped at {extraction.MAX_FINDINGS} matches - the pattern is "
             "matching far more than it should)" if truncated else "")
 
@@ -1039,6 +1145,7 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
             "status": "extracted",
             "message": f"{len(distinct)} value(s) extracted: {summary}{note}",
             "issues": [],
+            "matches": matches,
             "extracted_values": distinct,
             "refs": [_extract_ref(finding) for finding in findings[:MAX_EXTRACT_REFS]],
         }
@@ -1058,6 +1165,7 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
             "status": "pass",
             "message": f"'{first['value']}' {test} ({where}){note}",
             "issues": [],
+            "matches": matches,
             "extracted_values": distinct,
             "refs": [_extract_ref(finding)
                      for finding, _why in satisfied[:MAX_PASS_REFS]],
@@ -1066,9 +1174,15 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
         "status": "fail",
         "message": f"No extracted value {test} - found "
                    f"{len(distinct)} value(s){note}{scope_note}",
+        # Only the rejections the table cannot explain are listed. A number
+        # that simply failed the comparison is already a row with its value
+        # and its page; repeating it here says the same thing twice. One
+        # rejected because there was no number in it is not in that row at
+        # all, and is the only kind worth spelling out.
         "issues": [_issue(f"None of the extracted values {test}",
                           [_extract_ref(finding, why)
-                           for finding, why in rejected[:MAX_EXTRACT_REFS]])],
+                           for finding, why in rejected[:MAX_EXTRACT_REFS] if why])],
+        "matches": matches,
         "extracted_values": distinct,
     }
 

@@ -452,6 +452,40 @@ kbd {
 .rule-issue-items li { margin-bottom: 0.15rem; }
 .rule-issue-more { list-style: none; margin-left: -1.1rem; font-style: italic; color: var(--muted); }
 
+/* Where a rule found what it found. Open by default - the evidence is the
+   point - and shut per rule by whoever does not want it. */
+.rule-matches { margin-top: 0.6rem; }
+.rule-matches > summary {
+  cursor: pointer; font-size: 0.78rem; color: var(--muted);
+  padding: 0.15rem 0; user-select: none;
+}
+.rule-matches > summary:hover { color: var(--text); }
+.rule-match-table {
+  border-collapse: collapse; width: 100%; margin-top: 0.35rem; font-size: 0.78rem;
+  table-layout: fixed;
+}
+.rule-match-table th, .rule-match-table td {
+  border: 1px solid var(--border); padding: 0.3rem 0.45rem;
+  text-align: left; vertical-align: top; word-break: break-word;
+}
+.rule-match-table th { background: var(--bg); font-weight: 600; color: var(--muted); }
+.rule-match-table th:last-child, .rule-match-table td.rule-match-count {
+  text-align: right; width: 3.5rem;
+}
+.rule-match-table th:first-child { width: 32%; }
+.rule-match-pages { display: block; color: var(--muted); font-size: 0.72rem; }
+.rule-match-text { display: block; }
+.rule-match-context { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 0.1rem; }
+
+/* A page's LAYOUT sections, beside its form fields and tables. The text is
+   prose with its own line breaks, so they are kept. */
+.doc-section { margin: 0.5rem 0 0.8rem; }
+.doc-section-title { margin: 0 0 0.2rem; font-size: 0.82rem; }
+.doc-section-text {
+  margin: 0; font-size: 0.78rem; line-height: 1.45; color: var(--text);
+  white-space: pre-wrap;
+}
+
 /* A rule's file reference opens that document/page in the preview pane. It has
    to read as clickable without shouting, since a failing rule can list several. */
 a.rule-ref { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }

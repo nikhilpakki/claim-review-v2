@@ -86,6 +86,18 @@
       </table>
     `).join('');
 
+    // LAYOUT sections: the narrative a discharge summary is made of. Forms
+    // produce no pair for prose and tables see nothing in it, so without this
+    // the side pane showed a page of text as having nothing on it at all.
+    const sections = (data.sections || []).filter(
+      (s) => (s.title || '').trim() || (s.text || '').trim());
+    const sectionsHtml = sections.map((s) => `
+      <div class="doc-section">
+        <h4 class="doc-section-title">${escapeHtml((s.title || '').trim() || 'Untitled section')}</h4>
+        ${(s.text || '').trim() ? `<p class="doc-section-text">${escapeHtml(s.text.trim())}</p>` : ''}
+      </div>
+    `).join('');
+
     const { name: previewName, dir: previewDir } = splitPath(data.file_name);
     container.innerHTML = `
       <div class="preview-header">
@@ -120,6 +132,7 @@
           <h3>Signatures on this page (${data.signatures.length})</h3>
           <ul class="doc-list">${sigsHtml}</ul>
           ${tablesHtml ? `<h3>Tables on this page (${data.tables.length})</h3>${tablesHtml}` : ''}
+          ${sectionsHtml ? `<h3>Sections on this page (${sections.length})</h3>${sectionsHtml}` : ''}
         </div>
       </div>
     `;

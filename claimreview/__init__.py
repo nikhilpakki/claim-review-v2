@@ -80,6 +80,22 @@ def create_app(config_class=Config):
         from . import matching
         return matching.describe(config)
 
+    @app.template_filter("page_sections")
+    def _page_sections_filter(sections):
+        """A page's LAYOUT sections, trimmed, with the empty ones dropped.
+
+        A section can arrive with a heading and no body, or a body and no
+        heading (narrative continuing from the page before); only one with
+        neither is nothing to show.
+        """
+        out = []
+        for section in sections or []:
+            title = (section.get("title") or "").strip()
+            text = (section.get("text") or "").strip()
+            if title or text:
+                out.append({"title": title or "Untitled section", "text": text})
+        return out
+
     @app.template_filter("scope_summary")
     def _scope_summary_filter(tags):
         """A rule's document scope, spelled out by the engine that enforces

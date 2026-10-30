@@ -420,6 +420,39 @@ window.loadRules = function () {
         </div>`).join('');
     }
 
+    // Where the rule found what it found, in full. A verdict names one
+    // place and stops; the question a reviewer actually has is whether it
+    // passed for the right reason, and that needs all of them with counts.
+    function renderMatches(m) {
+      if (!m || !(m.rows || []).length) return '';
+      const docs = `${m.documents} document${m.documents === 1 ? '' : 's'}`;
+      const total = `${m.total} instance${m.total === 1 ? '' : 's'}`;
+      const extra = m.truncated
+        ? ` - showing the first ${m.shown} of ${m.total_rows} rows` : '';
+      const body = m.rows.map((row) => {
+        const name = String(row.file).split('/').pop();
+        const pages = (row.pages || []).length
+          ? `<span class="rule-match-pages">p${row.pages.join(', p')}</span>` : '';
+        const attrs = `data-file="${escapeHtml(row.file)}" data-page="${row.page || 1}"`
+          + (row.bbox ? ` data-bbox='${escapeHtml(JSON.stringify(row.bbox))}'` : '');
+        return `<tr>
+          <td><a href="#" class="rule-ref" ${attrs} title="${escapeHtml(row.file)}">${escapeHtml(name)}</a>${pages}</td>
+          <td><span class="rule-match-text">${escapeHtml(row.text)}</span>${
+            row.context ? `<span class="rule-match-context">in ${escapeHtml(row.context)}</span>` : ''}</td>
+          <td class="rule-match-count">${row.count}</td>
+        </tr>`;
+      }).join('');
+      // open by default: the evidence is the point, and a reviewer who wants
+      // it out of the way can shut it per rule.
+      return `<details class="rule-matches" open>
+        <summary>Found in ${docs}, ${total}${extra}</summary>
+        <table class="rule-match-table">
+          <thead><tr><th>Document</th><th>What matched</th><th>Count</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </details>`;
+    }
+
     // An extraction rule reports data, not a verdict: neither pass nor fail,
     // and never counted in the claim's violation total. It gets a badge of its
     // own rather than being folded into NO DATA, which would read as "this
@@ -436,16 +469,20 @@ window.loadRules = function () {
       // The values are the whole point of an extraction rule, so its list is
       // not trimmed to the eight a verdict's supporting references get.
       const limit = r.status === 'extracted' ? 25 : 8;
+      const table = renderMatches(r.matches);
+      // The refs are the first few of the same places the table lists in
+      // full, so they are dropped wherever it appears.
       const body = (r.issues && r.issues.length)
         ? renderIssues(r.issues)
         : `<p class="rule-message">${escapeHtml(r.message || '')}</p>`
-          + renderRefList(r.refs, null, limit);
+          + (table ? '' : renderRefList(r.refs, null, limit));
       return `<div class="rule-item">
         <div class="rule-item-header">
           <span class="rule-name">${escapeHtml(r.name)}</span>
           <span class="tag ${cls}">${label}</span>
         </div>
         ${body}
+        ${table}
       </div>`;
     }
 
