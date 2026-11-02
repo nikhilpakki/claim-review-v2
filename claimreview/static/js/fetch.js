@@ -353,11 +353,36 @@
   };
 
   function poll() {
-    fetch('/api/fetch/' + currentRunId + '/status').then((r) => r.json()).then(render);
+    fetch('/api/fetch/' + currentRunId + '/status')
+      .then((r) => r.json().then((data) => ({ ok: r.ok, code: r.status, data })))
+      .then(({ ok, code, data }) => (ok ? render(data) : unreachable(code, data)))
+      .catch(() => unreachable(0, {}));
+  }
+
+  // A status request that failed says nothing about the run. It is still
+  // going on the server; we just cannot see it from here. Feeding the error
+  // body to render() instead is how an expired session came to show a blank
+  // badge, an empty log and "Nothing to review" for a fetch that was running
+  // perfectly well - every field it read was simply missing.
+  function unreachable(code, data) {
+    if (code === 401 || code === 403) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      runStatus.innerHTML = 'Signed out - this run is still going on the server. '
+        + '<a href="/login?next=%2Ffetch">Sign in again</a> to follow it.';
+      return;
+    }
+    // Anything else is treated as a blip and polled through: a restarting
+    // server or a dropped packet should recover without the reviewer having
+    // to work out whether their fetch survived.
+    runStatus.textContent = 'Cannot reach the server for this run'
+      + (data && data.error ? ' - ' + data.error : '') + ' - still trying.';
   }
 
   function render(state) {
-    if (state.status === 'not_found') return;
+    // No status means this is not run state, whatever else it contains -
+    // never let it reach the "the run has finished" branch below.
+    if (!state.status || state.status === 'not_found') return;
 
     runBadge.textContent = state.status;
     runBadge.className = 'badge status-' + (
