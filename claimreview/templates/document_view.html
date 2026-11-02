@@ -26,6 +26,10 @@
           data-claim-id="{{ claim_id }}" data-doc-id="{{ doc_id }}" data-page="{{ page }}"
           title="This page matches the '{{ tag }}' tag - click to see what matched">{{ tag }}</button>
   {%- endfor %}
+  {#- Filled in by evidence.js, the same control the preview pane carries, so
+      a page can be marked from wherever it is being read. -#}
+  <span class="evidence-mark" data-claim-id="{{ claim_id }}"
+        data-doc-id="{{ doc_id }}" data-page="{{ page }}"></span>
 </div>
 
 <div class="doc-viewer">
@@ -117,4 +121,8 @@
 </script>
 <script src="{{ url_for('static', filename='js/overlay.js') }}"></script>
 <script src="{{ url_for('static', filename='js/doc_tags.js') }}"></script>
+<script src="{{ url_for('static', filename='js/evidence.js') }}"></script>
+<script>
+  document.querySelectorAll('.evidence-mark').forEach(window.mountEvidenceMark);
+</script>
 {% endblock %}

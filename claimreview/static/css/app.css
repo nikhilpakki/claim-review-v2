@@ -477,6 +477,40 @@ kbd {
 .rule-match-text { display: block; }
 .rule-match-context { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 0.1rem; }
 
+/* Marking the page you are reading as evidence. Lives in the page header
+   beside the tags, so it is where your eye already is when you find
+   something worth keeping. */
+.evidence-mark { display: inline-flex; align-items: center; gap: 0.35rem; }
+.evidence-loading { color: var(--muted); font-size: 0.75rem; }
+.evidence-toggle {
+  font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--panel);
+  color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.evidence-toggle:hover { color: var(--text); border-color: var(--muted); }
+.evidence-toggle.marked {
+  background: #fef3c7; color: #78350f; border-color: #f59e0b; font-weight: 600;
+}
+.evidence-note {
+  font-size: 0.72rem; padding: 0.15rem 0.45rem; width: 13rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+}
+
+/* What the next decision will carry, and what a past one did. */
+.evidence-pending { margin-bottom: 0.8rem; }
+.evidence-list { list-style: none; margin: 0.3rem 0 0; padding: 0; font-size: 0.78rem; }
+.evidence-list li {
+  display: flex; align-items: baseline; gap: 0.4rem; padding: 0.15rem 0;
+  flex-wrap: wrap;
+}
+.evidence-note-text { color: var(--muted); font-style: italic; }
+.evidence-drop {
+  margin-left: auto; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 1rem; line-height: 1; padding: 0 0.2rem;
+}
+.evidence-drop:hover { color: var(--danger); }
+.evidence-attached { margin-top: 0.35rem; }
+
 /* A page's LAYOUT sections, beside its form fields and tables. The text is
    prose with its own line breaks, so they are kept. */
 .doc-section { margin: 0.5rem 0 0.8rem; }

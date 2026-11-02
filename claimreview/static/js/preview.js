@@ -118,6 +118,8 @@
         ${data.correction_suspected ? `<span class="tag tag-correction" title="Localized ink-density anomaly - possible correction/strikethrough. Low confidence, can misfire on stamps/tables/signatures.">&#9888; possible correction</span>` : ''}
         ${data.has_face ? `<span class="tag tag-has-face" title="A face was detected on this page">&#9888; has face</span>` : ''}
         ${(data.doc_tags || []).map((t) => `<button type="button" class="tag tag-custom tag-clickable" data-tag="${escapeHtml(t)}" data-doc-id="${escapeHtml(docId)}" data-page="${data.page_number}" title="This page matches the '${escapeHtml(t)}' tag - click to see what matched">${escapeHtml(t)}</button>`).join('')}
+        <span class="evidence-mark" data-claim-id="${escapeHtml(claimId)}"
+              data-doc-id="${escapeHtml(docId)}" data-page="${data.page_number}"></span>
       </div>
       <div class="doc-viewer">
         <div class="page-pane">
@@ -136,6 +138,13 @@
         </div>
       </div>
     `;
+
+    // Filled in by evidence.js, which owns the marked/unmarked state for the
+    // whole claim - the header here is rebuilt on every page turn and must
+    // not be the thing remembering it.
+    if (window.mountEvidenceMark) {
+      container.querySelectorAll('.evidence-mark').forEach(window.mountEvidenceMark);
+    }
 
     const frame = document.getElementById('preview-page-frame');
     const img = document.getElementById('preview-page-img');

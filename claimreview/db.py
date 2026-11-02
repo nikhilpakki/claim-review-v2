@@ -296,6 +296,45 @@ CREATE TABLE IF NOT EXISTS rules (
   -- rule still says who wrote it after that account is gone.
   created_by TEXT
 );
+
+-- Pages a reviewer has marked while reading a claim, before they decide on
+-- it. Personal, like bookmarks: two people working the same claim must not be
+-- able to add to or remove from each other's pending submission, so every
+-- read and write here is scoped by user_id.
+--
+-- A page, not a document. A forty-page bundle is rarely proof of anything as
+-- a whole - the reviewer found it on one page, and whoever follows the
+-- decision up should not have to find that page again.
+--
+-- UNIQUE makes marking idempotent, and lets the note be edited by marking
+-- the same page again rather than needing an update path of its own.
+CREATE TABLE IF NOT EXISTS evidence_marks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  claim_id TEXT NOT NULL,
+  document_path TEXT NOT NULL,
+  page_number INTEGER NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (user_id, claim_id, document_path, page_number)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_marks_claim
+  ON evidence_marks(user_id, claim_id);
+
+-- What a submitted decision was actually based on. A copy, not a reference:
+-- the marks are cleared when the decision is submitted, and a reviewer
+-- re-marking the same page later must not rewrite the record of a decision
+-- already made. Deleting the review takes its evidence with it.
+CREATE TABLE IF NOT EXISTS review_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id INTEGER NOT NULL,
+  document_path TEXT NOT NULL,
+  page_number INTEGER NOT NULL,
+  note TEXT,
+  FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_review_evidence_review
+  ON review_evidence(review_id);
 """
 
 # Columns added after a table's initial release - CREATE TABLE IF NOT EXISTS
