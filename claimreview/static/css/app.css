@@ -511,6 +511,14 @@ kbd {
 .evidence-drop:hover { color: var(--danger); }
 .evidence-attached { margin-top: 0.35rem; }
 
+/* The claims list could not be refreshed. Deliberately loud: the rows under
+   it are the last good answer, not the current one. */
+.claim-load-error {
+  color: var(--danger); border: 1px solid var(--danger); border-radius: var(--radius-sm);
+  padding: 0.45rem 0.7rem; margin: 0.6rem 0;
+}
+.claim-pager { display: flex; align-items: center; gap: 0.7rem; margin-top: 0.8rem; }
+
 /* A page's LAYOUT sections, beside its form fields and tables. The text is
    prose with its own line breaks, so they are kept. */
 .doc-section { margin: 0.5rem 0 0.8rem; }

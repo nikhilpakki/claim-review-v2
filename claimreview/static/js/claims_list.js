@@ -42,6 +42,7 @@
   // ------------------------------------------------------------ the list
 
   let inFlight = null;
+  const loadError = document.getElementById('claim-load-error');
 
   function load(resetOffset) {
     if (resetOffset) state.offset = 0;
@@ -50,11 +51,13 @@
     inFlight = token;
     list.classList.add('loading');
     fetch('/api/claims/page?' + query)
-      .then((r) => r.json())
-      .then((data) => {
+      .then((r) => r.json().then((data) => ({ ok: r.ok, code: r.status, data })))
+      .then(({ ok, code, data }) => {
         // A slower earlier request must not overwrite a newer answer: typing
         // quickly fires several, and they do not come back in order.
         if (inFlight !== token) return;
+        if (!ok) { failed(code, data); return; }
+        if (loadError) loadError.hidden = true;
         list.innerHTML = data.rows_html
           || '<li class="empty">No claims match this filter.</li>';
         state.matching = data.matching;
@@ -65,12 +68,34 @@
         updateBatchUI();
         syncUrl();
       })
+      .catch(() => { if (inFlight === token) failed(0, {}); })
       .finally(() => {
         if (inFlight === token) {
           inFlight = null;
           list.classList.remove('loading');
         }
       });
+  }
+
+  // A request that failed says nothing about the folder. Reading its error
+  // body as a claim list is what turned an expired session into "undefined of
+  // 439 claim(s)", a pager reading "0-NaN of undefined", and "No claims match
+  // this filter" over a folder with 439 claims in it - every field the page
+  // wanted was simply absent. The rows already on screen are the last true
+  // answer, so they stay, and the reason is said out loud above them.
+  function failed(code, data) {
+    if (!loadError) return;
+    loadError.hidden = false;
+    if (code === 401 || code === 403) {
+      loadError.innerHTML = 'Signed out - the folder is still there. '
+        + '<a href="/login?next=%2Fclaims">Sign in again</a> to load it.';
+      return;
+    }
+    const detail = (data && data.error) ? data.error : '';
+    loadError.textContent = code === 400
+      ? `${detail || 'That folder cannot be read'} - choose a folder again.`
+      : `Could not load the claim list${detail ? ' - ' + detail : ''}. `
+        + 'The list below is what was last loaded.';
   }
 
   function syncUrl() {

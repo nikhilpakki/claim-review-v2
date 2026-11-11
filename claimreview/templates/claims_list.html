@@ -113,6 +113,10 @@
   <span id="batch-status" class="progress-status"></span>
 </div>
 
+{#- Why the list could not be refreshed, when it could not. The rows below
+    stay as they were: a failed request says nothing about the folder. -#}
+<p class="hint claim-load-error" id="claim-load-error" hidden></p>
+
 <ul class="claim-list" id="claim-list"
     data-offset="{{ page.offset }}" data-limit="{{ page.limit }}"
     data-matching="{{ page.matching }}">
