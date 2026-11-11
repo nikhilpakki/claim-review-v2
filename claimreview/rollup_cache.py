@@ -122,36 +122,51 @@ def claim_key(global_fp, doc_hashes, extract_version=None):
 
 
 def get_all(user_id=None):
-    """{claim_id: (cache_key, rollup)} for every cached claim, read in one
-    query - the claims list needs most of them, and one round trip beats one
-    per claim."""
+    """{claim_id: (cache_key, global_fp, rollup)} for every cached claim, read
+    in one query - the claims list needs most of them, and one round trip
+    beats one per claim.
+
+    global_fp is the settings/rules half of the key, repeated on the row so a
+    caller can ask whether an entry is current without rebuilding the full key
+    - which would mean hashing the claim's documents. claim_index uses that to
+    decide which claims a quality filter is able to judge.
+    """
     rows = get_db().execute(
-        "SELECT claim_id, cache_key, rollup_json FROM claim_rollup_cache WHERE user_id=?",
+        "SELECT claim_id, cache_key, global_fp, rollup_json FROM claim_rollup_cache "
+        "WHERE user_id=?",
         (user_id or users.SHARED_OWNER_ID,),
     ).fetchall()
     out = {}
     for row in rows:
         try:
-            out[row["claim_id"]] = (row["cache_key"], json.loads(row["rollup_json"]))
+            out[row["claim_id"]] = (row["cache_key"], row["global_fp"],
+                                    json.loads(row["rollup_json"]))
         except (json.JSONDecodeError, TypeError):
             continue  # corrupt row behaves as a miss and is overwritten on write
     return out
 
 
-def put_many(entries, user_id=None):
+def put_many(entries, user_id=None, global_fp=""):
     """entries: [(claim_id, cache_key, rollup)]. One row per claim - a new key
-    replaces the old, so this table stays the size of the folder."""
+    replaces the old, so this table stays the size of the folder.
+
+    `global_fp` is the shared half of those keys, stored alongside for the
+    cheap currency check get_all() describes.
+    """
     if not entries:
         return
     now = datetime.now(timezone.utc).isoformat()
     db = get_db()
     owner = user_id or users.SHARED_OWNER_ID
     db.executemany(
-        "INSERT INTO claim_rollup_cache (user_id, claim_id, cache_key, rollup_json, computed_at) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "INSERT INTO claim_rollup_cache "
+        "(user_id, claim_id, cache_key, global_fp, rollup_json, computed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(user_id, claim_id) DO UPDATE SET cache_key=excluded.cache_key, "
-        "rollup_json=excluded.rollup_json, computed_at=excluded.computed_at",
-        [(owner, claim_id, key, json.dumps(rollup), now) for claim_id, key, rollup in entries],
+        "global_fp=excluded.global_fp, rollup_json=excluded.rollup_json, "
+        "computed_at=excluded.computed_at",
+        [(owner, claim_id, key, global_fp, json.dumps(rollup), now)
+         for claim_id, key, rollup in entries],
     )
     db.commit()
 

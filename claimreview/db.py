@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS claim_rollup_cache (
   user_id INTEGER NOT NULL DEFAULT 0,
   claim_id TEXT NOT NULL,
   cache_key TEXT NOT NULL,
+  -- The settings/rules half of cache_key, kept separately so the claims list
+  -- can ask "still current?" without hashing the claim to rebuild the key.
+  global_fp TEXT NOT NULL DEFAULT '',
   rollup_json TEXT NOT NULL,
   computed_at TEXT NOT NULL,
   PRIMARY KEY (user_id, claim_id)
@@ -365,6 +368,15 @@ _MIGRATED_COLUMNS = {
     # instead, which is a deliberate change of behaviour: fuzzy "whole" is
     # stricter than the "inside a field" they had, so a tag stops landing on a
     # page where its word was only a fragment of a longer one.
+    # Stored beside the full key so the claims list can ask the cheap half of
+    # the question - "was this computed under the current settings and
+    # rules?" - without hashing the claim's documents to rebuild the whole
+    # key. The quality filters need that answer for every claim in the
+    # folder; '' reads as "computed before this column existed", which is a
+    # miss, so the background pass recomputes it once.
+    "claim_rollup_cache": {
+        "global_fp": "TEXT NOT NULL DEFAULT ''",
+    },
     "doc_tags": {
         "match_regex": "INTEGER NOT NULL DEFAULT 1",
         "match_exact": "INTEGER NOT NULL DEFAULT 1",
@@ -476,6 +488,7 @@ def _scope_rollup_cache(conn):
           user_id INTEGER NOT NULL DEFAULT 0,
           claim_id TEXT NOT NULL,
           cache_key TEXT NOT NULL,
+          global_fp TEXT NOT NULL DEFAULT '',
           rollup_json TEXT NOT NULL,
           computed_at TEXT NOT NULL,
           PRIMARY KEY (user_id, claim_id)

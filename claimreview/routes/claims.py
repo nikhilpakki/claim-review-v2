@@ -4,64 +4,20 @@ from datetime import datetime
 from flask import (Blueprint, current_app, jsonify, redirect, render_template,
                    request, stream_with_context, url_for)
 
-from .. import (claim_amounts, claim_export, claim_extract, claim_scanner, claim_sections,
-                claim_summary, classify, csv_data, doc_tags, processing, rollup_cache,
-                root_state, rules_engine, settings_store, textract_profile, users)
+from .. import (claim_amounts, claim_export, claim_extract, claim_index, claim_scanner,
+                claim_sections, claim_summary, classify, csv_data, doc_tags, processing,
+                rollup_cache, root_state, rules_engine, settings_store, textract_profile,
+                users)
 from ..db import get_latest_runs
 from ..fetch import runs as fetch_runs
 
 bp = Blueprint("claims", __name__)
 
 
-def _empty_rollup():
-    return {"blurry_pages": 0, "too_clean_pages": 0, "cropped_pages": 0,
-            "correction_pages": 0, "paste_signatures": 0, "duplicate_signatures": 0,
-            "face_pages": 0, "rule_violations": 0}
-
-
-def _claim_rollup(claim_id, claim_path, docs, settings, user_id=None, rules=None):
-    """Live counts for the claims-list badges, computed fresh against
-    *current* settings/rules from each already-cached, deduped document -
-    not a processing_runs snapshot - so retuning a threshold or rule
-    updates these immediately, with no reprocessing or AWS cost. `docs` is
-    an already-scanned claim_scanner.scan_claim_cached() list, shared with
-    the rules evaluation below so the claim's files are only hashed/read
-    once per page load, not once per rollup metric plus once per rule."""
-    rollup = _empty_rollup()
-    seen_hashes = set()
-    for doc in docs:
-        file_hash = doc["file_hash"]
-        if file_hash in seen_hashes:
-            continue
-        seen_hashes.add(file_hash)
-        cached_result = doc["cached_result"]
-        if not cached_result:
-            continue
-        for page in cached_result.get("pages", []):
-            tags = classify.classify_page(page, settings)
-            if tags["is_blurry"]:
-                rollup["blurry_pages"] += 1
-            if tags["too_clean_suspected"]:
-                rollup["too_clean_pages"] += 1
-            if tags["cropped_suspected"]:
-                rollup["cropped_pages"] += 1
-            if tags["correction_suspected"]:
-                rollup["correction_pages"] += 1
-            if tags["has_face"]:
-                rollup["face_pages"] += 1
-            for sig in page.get("signatures", []):
-                sig_tags = classify.classify_signature(sig, settings)
-                if sig_tags["paste_suspicious"]:
-                    rollup["paste_signatures"] += 1
-                if sig_tags["possible_duplicate_of"]:
-                    rollup["duplicate_signatures"] += 1
-
-    rollup["rule_violations"] = sum(
-        1 for r in rules_engine.evaluate_rules(claim_id, claim_path, docs=docs,
-                                               settings=settings, user_id=user_id,
-                                               rules=rules)
-        if r["status"] == "fail")
-    return rollup
+# Both of these moved to claim_index, which is where the background pass
+# needs them too; re-exported so nothing that imported them from here breaks.
+_empty_rollup = claim_index.empty_rollup
+_claim_rollup = claim_index.claim_rollup
 
 
 def _fetch_run_context(claim_ids):
@@ -93,63 +49,78 @@ def _fetch_run_context(claim_ids):
     }
 
 
+def _page_params():
+    """The filters the page is showing, read from the query string.
+
+    One reader for both the HTML route and the JSON one, so a link pasted
+    into the address bar and a click on the page's own paging controls cannot
+    produce different lists.
+    """
+    args = request.args
+    try:
+        offset = max(0, int(args.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    return {
+        "offset": offset,
+        "limit": claim_index.PAGE_SIZE,
+        "query": (args.get("q") or "").strip(),
+        "status_filter": args.get("status") or "all",
+        "tags": [t for t in (args.get("tags") or "").split(",") if t],
+        "run_filter": args.get("fetch_run") or "",
+        "run_only": args.get("run_only") == "1",
+    }
+
+
+def _claims_page(ctx, params, preselect):
+    """One page of claims plus the counts the page needs to describe itself."""
+    matching, scanned, considered = claim_index.select(
+        ctx, query=params["query"], status_filter=params["status_filter"],
+        tags=params["tags"], run_filter=params["run_filter"],
+        run_only=params["run_only"], preselect=preselect)
+    entries = claim_index.page(ctx, matching, params["offset"], params["limit"],
+                               preselect=preselect)
+    warm = claim_index.warm_state(ctx.root, ctx.user_id)
+    return {
+        "claims": entries,
+        "offset": params["offset"],
+        "limit": params["limit"],
+        "matching": len(matching),
+        "folder_total": len(ctx.claims),
+        # How many of the claims that passed the cheap filters have a rollup
+        # to judge. A tag filter can only have searched these, and saying so
+        # is the difference between "no blurry claims" and "none found yet".
+        "scanned": scanned,
+        "considered": considered,
+        "warming": warm["running"],
+        "ready": sum(1 for _claim, state in matching
+                     if state["status"] == "completed"),
+    }
+
+
 @bp.route("/claims")
 def list_claims_view():
     root = root_state.get_active_root()
     if not root:
         return redirect(url_for("browse.browse"))
-    claims = claim_scanner.list_claims(root)
-    latest_runs = get_latest_runs()
-    settings = settings_store.get_settings()
-    preselect, fetch_run = _fetch_run_context([c["claim_id"] for c in claims])
-    # Which fetch run each claim came from, so a folder holding several batches
-    # is legible rather than one undifferentiated list.
-    claim_runs = fetch_runs.claim_run_map()
-    fetch_run_options = fetch_runs.runs_with_claims(limit=25)
-
-    # Rollups are memoized per claim (see rollup_cache.py). The key covers the
-    # claim's documents, the settings, the rules and the claims dataset, so a
-    # hit is only taken when recomputing would produce the same answer - live
-    # retuning still shows up immediately, it just does not re-read and
-    # re-classify every claim in the folder on every page load.
     user_id = users.current_user_id()
-    global_fp = rollup_cache.global_fingerprint(settings, user_id)
-    cached_rollups = rollup_cache.get_all(user_id)
-    extract_versions = claim_extract.versions()
-    # The rule set is the same for every claim in the folder, so it is read once
-    # here instead of once per claim (two queries each, thousands of times over).
-    rules = rules_engine.list_rules(user_id)
-    fresh = []
+    ctx = claim_index.Context(root, user_id)
+    preselect, fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
+    params = _page_params()
+    data = _claims_page(ctx, params, preselect)
 
-    for claim in claims:
-        claim_id = claim["claim_id"]
-        status = processing.get_claim_status(claim_id, latest_runs.get(claim_id))
-        if status["status"] in ("completed", "failed"):
-            docs = claim_scanner.scan_claim_hashed(claim["path"])
-            key = rollup_cache.claim_key(global_fp, (d["file_hash"] for d in docs),
-                                         extract_versions.get(claim_id))
-            hit = cached_rollups.get(claim_id)
-            if hit and hit[0] == key:
-                status["rollup"] = hit[1]
-            else:
-                claim_scanner.attach_cached_results(docs)
-                rollup = _claim_rollup(claim_id, claim["path"], docs, settings, user_id,
-                                       rules=rules)
-                status["rollup"] = rollup
-                fresh.append((claim_id, key, rollup))
-        else:
-            status["rollup"] = _empty_rollup()
-        claim["status"] = status
-        claim["preselected"] = claim_id in preselect
-        claim["fetch_run"] = claim_runs.get(claim_id)
+    # Started only after the page's own fifteen claims are in hand, so the
+    # background pass is never competing with the request the reviewer is
+    # waiting on for the same folder.
+    claim_index.warm_start(current_app._get_current_object(), root, user_id,
+                           ctx.global_fp, len(ctx.claims))
 
-    rollup_cache.put_many(fresh, user_id)
+    fetch_run_options = fetch_runs.runs_with_claims(limit=25)
     # Only offer runs whose claims are actually in this folder - a run that
     # downloaded somewhere else would filter the list down to nothing.
-    present = {c["claim_id"] for c in claims}
     here_counts = {}
-    for claim_id in present:
-        for run_id in (claim_runs.get(claim_id, {}).get("run_ids") or []):
+    for claim in ctx.claims:
+        for run_id in (ctx.claim_runs.get(claim["claim_id"], {}).get("run_ids") or []):
             here_counts[run_id] = here_counts.get(run_id, 0) + 1
     # The count shown is claims from that run *in this folder*, which is what
     # the filter will actually reveal - a run's own total can include claims
@@ -158,10 +129,71 @@ def list_claims_view():
         dict(run, claims_here=here_counts[run["run_id"]])
         for run in fetch_run_options if run["run_id"] in here_counts
     ]
-    return render_template("claims_list.html", claims=claims, active_root=root,
-                           settings=settings, fetch_run=fetch_run,
+    return render_template("claims_list.html", page=data, active_root=root,
+                           settings=ctx.settings, fetch_run=fetch_run,
                            fetch_run_options=fetch_run_options,
-                           selected_run_id=request.args.get("fetch_run") or "")
+                           page_size=claim_index.PAGE_SIZE,
+                           # Every claim the fetch landed, not just the ones on
+                           # this page: "process what I just fetched" was one
+                           # click before paging and has to stay one click.
+                           preselect_ids=sorted(preselect),
+                           selected_run_id=params["run_filter"])
+
+
+@bp.route("/api/claims/page")
+def api_claims_page():
+    """One page of the claims list, rendered server-side.
+
+    The rows come back as HTML from the same partial the first page is
+    rendered with, rather than as data the browser assembles itself: there is
+    one definition of a claim row, and a badge added to it appears on every
+    page without a second implementation to keep in step.
+    """
+    root = root_state.get_active_root()
+    if not root:
+        return jsonify({"error": "No active root"}), 400
+    user_id = users.current_user_id()
+    ctx = claim_index.Context(root, user_id)
+    preselect, _fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
+    data = _claims_page(ctx, _page_params(), preselect)
+    claim_index.warm_start(current_app._get_current_object(), root, user_id,
+                           ctx.global_fp, len(ctx.claims))
+    return jsonify({
+        **{k: v for k, v in data.items() if k != "claims"},
+        "rows_html": render_template("partials/claim_rows.html",
+                                     claims=data["claims"], settings=ctx.settings),
+    })
+
+
+@bp.route("/api/claims/matching-ids")
+def api_matching_ids():
+    """Every claim id matching the current filters, for "select all".
+
+    A separate call because it is only wanted when the reviewer asks for it,
+    and a thousand ids on every page turn would be a thousand ids nobody
+    reads.
+    """
+    root = root_state.get_active_root()
+    if not root:
+        return jsonify({"error": "No active root"}), 400
+    user_id = users.current_user_id()
+    ctx = claim_index.Context(root, user_id)
+    preselect, _fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
+    params = _page_params()
+    matching, _scanned, _considered = claim_index.select(
+        ctx, query=params["query"], status_filter=params["status_filter"],
+        tags=params["tags"], run_filter=params["run_filter"],
+        run_only=params["run_only"], preselect=preselect)
+    return jsonify({"claim_ids": [claim["claim_id"] for claim, _state in matching]})
+
+
+@bp.route("/api/claims/scan-progress")
+def api_scan_progress():
+    """How far the background pass has got, for the line under the filters."""
+    root = root_state.get_active_root()
+    if not root:
+        return jsonify({"running": False, "scanned": 0, "total": 0})
+    return jsonify(claim_index.warm_state(root, users.current_user_id()))
 
 
 @bp.route("/claims/export.csv", methods=["GET", "POST"])

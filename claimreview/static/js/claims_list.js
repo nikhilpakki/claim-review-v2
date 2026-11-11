@@ -6,75 +6,140 @@
   const emptyMsg = document.getElementById('claim-filter-empty');
   if (!list || !textInput || !statusBar) return;
 
-  let activeStatus = 'all';
-  const activeTags = new Set();
-  // Set by the "Show only these" button on the ?fetch_run= banner: narrows the
-  // list to the claims a fetch just landed.
-  let fetchRunOnly = false;
-  // Run id selected in the "All fetches" dropdown, or '' for no run filter.
-  let runFilter = '';
+  // Filtering and paging are the server's job now. A folder of a thousand
+  // claims is no longer all in the DOM - fifteen of it are - so a filter the
+  // browser applied to the rows it happens to hold would answer about the
+  // page rather than about the folder.
+  const state = {
+    offset: Number(list.dataset.offset || 0),
+    limit: Number(list.dataset.limit || 15),
+    matching: Number(list.dataset.matching || 0),
+    status: 'all',
+    tags: new Set(),
+    runFilter: '',
+    runOnly: false,
+  };
 
-  // The rows, read once. querySelectorAll on every keystroke across a folder of
-  // a few thousand claims was a measurable part of the lag, and the set does
-  // not change while the page is open.
-  const rows = Array.from(list.querySelectorAll('li[data-claim-id]'));
-  // Each row's run ids, split once rather than on every pass.
-  rows.forEach((li) => {
-    li._runIds = (li.dataset.runIds || '').split(' ').filter(Boolean);
-    li._claimIdLower = li.dataset.claimId.toLowerCase();
-  });
+  // Ticked claims, kept here rather than read off the checkboxes: the rows
+  // they belong to are replaced on every page turn, and a selection that
+  // vanished when you looked at page two would make "process these forty"
+  // impossible to express.
+  const selected = new Set(window.PRESELECTED_CLAIMS || []);
 
-  let visibleRows = rows.slice();
-
-  function applyFilter() {
-    const text = textInput.value.trim().toLowerCase();
-    const tags = Array.from(activeTags);
-    const visible = [];
-    let readyCount = 0;
-    for (const li of rows) {
-      const show = (activeStatus === 'all' || li.dataset.status === activeStatus)
-        && (!text || li._claimIdLower.includes(text))
-        && tags.every((tag) => li.dataset[tag] === '1')
-        && (!fetchRunOnly || li.dataset.fetchRun === '1')
-        // A claim can belong to several runs; selecting any of them shows it.
-        && (!runFilter || li._runIds.includes(runFilter));
-      // Only touch the DOM when the answer actually changed: assigning the
-      // same display value to thousands of nodes still costs a style
-      // recalculation, and most rows do not change between passes.
-      const hidden = li.style.display === 'none';
-      if (show === hidden) li.style.display = show ? '' : 'none';
-      if (show) {
-        visible.push(li);
-        if (li.dataset.status === 'completed') readyCount += 1;
-      }
-    }
-    visibleRows = visible;
-    emptyMsg.style.display = visible.length === 0 ? '' : 'none';
-    updateCounts(visible.length, readyCount);
-    updateBatchUI();
+  function params(extra) {
+    const p = new URLSearchParams();
+    if (state.offset) p.set('offset', state.offset);
+    const q = textInput.value.trim();
+    if (q) p.set('q', q);
+    if (state.status !== 'all') p.set('status', state.status);
+    if (state.tags.size) p.set('tags', Array.from(state.tags).join(','));
+    if (state.runFilter) p.set('fetch_run', state.runFilter);
+    if (state.runOnly) p.set('run_only', '1');
+    Object.entries(extra || {}).forEach(([k, v]) => p.set(k, v));
+    return p;
   }
 
-  // The header counts are rendered for the whole folder; once a filter hides
-  // most of it they described a page nobody was looking at, which is what made
-  // filtering feel like it had not taken effect.
+  // ------------------------------------------------------------ the list
+
+  let inFlight = null;
+
+  function load(resetOffset) {
+    if (resetOffset) state.offset = 0;
+    const query = params().toString();
+    const token = {};
+    inFlight = token;
+    list.classList.add('loading');
+    fetch('/api/claims/page?' + query)
+      .then((r) => r.json())
+      .then((data) => {
+        // A slower earlier request must not overwrite a newer answer: typing
+        // quickly fires several, and they do not come back in order.
+        if (inFlight !== token) return;
+        list.innerHTML = data.rows_html
+          || '<li class="empty">No claims match this filter.</li>';
+        state.matching = data.matching;
+        state.offset = data.offset;
+        restoreChecks();
+        updateCounts(data);
+        updatePager(data);
+        updateBatchUI();
+        syncUrl();
+      })
+      .finally(() => {
+        if (inFlight === token) {
+          inFlight = null;
+          list.classList.remove('loading');
+        }
+      });
+  }
+
+  function syncUrl() {
+    const url = new URL(window.location.href);
+    url.search = params().toString();
+    window.history.replaceState({}, '', url);
+  }
+
   const countSummary = document.getElementById('claim-count-summary');
   const readySummary = document.getElementById('claim-ready-summary');
+  const scanProgress = document.getElementById('scan-progress');
 
-  function updateCounts(visibleCount, readyCount) {
-    if (!countSummary) return;
-    const total = Number(countSummary.dataset.total || 0);
-    countSummary.textContent = visibleCount === total
-      ? `${total} claim(s)`
-      : `${visibleCount} of ${total} claim(s)`;
-    if (readySummary) readySummary.textContent = readyCount;
+  function updateCounts(data) {
+    if (countSummary) {
+      const folder = Number(countSummary.dataset.folderTotal || 0);
+      countSummary.textContent = data.matching === folder
+        ? `${folder} claim(s)`
+        : `${data.matching} of ${folder} claim(s)`;
+    }
+    if (readySummary) readySummary.textContent = data.ready;
+    if (emptyMsg) emptyMsg.style.display = data.matching === 0 ? '' : 'none';
+    // A tag filter can only have searched the claims that have been read.
+    // Without this the page would say "no blurry claims" when it means
+    // "none among the two hundred looked at so far".
+    if (scanProgress) {
+      const partial = data.scanned < data.considered;
+      scanProgress.hidden = !(partial && (data.warming || state.tags.size));
+      scanProgress.textContent = state.tags.size
+        ? `Quality filters have searched ${data.scanned} of ${data.considered} claims so far`
+          + (data.warming ? ' - still reading the rest.' : '.')
+        : `Reading the folder in the background: ${data.scanned} of ${data.considered} claims so far.`;
+    }
   }
+
+  const pager = document.getElementById('claim-pager');
+  const prevBtn = document.getElementById('page-prev');
+  const nextBtn = document.getElementById('page-next');
+  const pageLabel = document.getElementById('page-label');
+
+  function updatePager(data) {
+    if (!pager) return;
+    const last = Math.max(0, Math.ceil(data.matching / data.limit) - 1);
+    const current = Math.floor(data.offset / data.limit);
+    pager.hidden = data.matching <= data.limit;
+    prevBtn.disabled = data.offset <= 0;
+    nextBtn.disabled = data.offset + data.limit >= data.matching;
+    const from = data.matching ? data.offset + 1 : 0;
+    const to = Math.min(data.offset + data.limit, data.matching);
+    pageLabel.textContent = `${from}-${to} of ${data.matching}`
+      + (last ? ` (page ${current + 1} of ${last + 1})` : '');
+  }
+
+  if (prevBtn) prevBtn.addEventListener('click', () => {
+    state.offset = Math.max(0, state.offset - state.limit);
+    load(false);
+  });
+  if (nextBtn) nextBtn.addEventListener('click', () => {
+    state.offset += state.limit;
+    load(false);
+  });
+
+  // ------------------------------------------------------------ the filters
 
   statusBar.querySelectorAll('.filter-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       statusBar.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
-      activeStatus = btn.dataset.status;
-      applyFilter();
+      state.status = btn.dataset.status;
+      load(true);
     });
   });
 
@@ -82,29 +147,30 @@
     tagBar.querySelectorAll('.tag-toggle').forEach((btn) => {
       btn.addEventListener('click', () => {
         const tag = btn.dataset.tag;
-        if (activeTags.has(tag)) {
-          activeTags.delete(tag);
+        if (state.tags.has(tag)) {
+          state.tags.delete(tag);
           btn.classList.remove('active');
         } else {
-          activeTags.add(tag);
+          state.tags.add(tag);
           btn.classList.add('active');
         }
-        applyFilter();
+        load(true);
       });
     });
   }
 
-  // Coalesce keystrokes: a filter pass over a few thousand rows per character
-  // is what the typing lag was.
+  // Coalesce keystrokes: each one is now a request, not a DOM pass.
   let typingTimer = null;
   textInput.addEventListener('input', () => {
     clearTimeout(typingTimer);
-    typingTimer = setTimeout(applyFilter, 90);
+    typingTimer = setTimeout(() => load(true), 250);
   });
 
   // ------------------------------------------------------------ batch select/process
 
   const selectAllCheckbox = document.getElementById('select-all-checkbox');
+  const selectAllMatching = document.getElementById('select-all-matching');
+  const clearSelection = document.getElementById('clear-selection');
   const countEl = document.getElementById('batch-selected-count');
   const processBtn = document.getElementById('batch-process-btn');
   const batchStatusEl = document.getElementById('batch-status');
@@ -113,111 +179,173 @@
     return Array.from(list.querySelectorAll('.claim-checkbox'));
   }
 
-  function selectedIds() {
-    return checkboxes().filter((cb) => cb.checked).map((cb) => cb.value);
+  // A fresh page of rows knows nothing about what was ticked before it; the
+  // rows rendered pre-checked by a fetch run are folded in the other way.
+  function restoreChecks() {
+    checkboxes().forEach((cb) => {
+      if (cb.checked) selected.add(cb.value);
+      else cb.checked = selected.has(cb.value);
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(cb.value);
+        else selected.delete(cb.value);
+        updateBatchUI();
+      });
+    });
   }
 
-  // The Export menu's first item follows whatever is narrowing the page. It
-  // used to read a server-rendered ?fetch_run=, which the dropdown never sets -
-  // the filtering is client-side - so picking a fetch left it disabled.
-  const exportForm = document.getElementById('export-form');
   const exportBtn = document.getElementById('export-scoped');
   const exportNote = document.getElementById('export-scoped-note');
   const exportRunInput = document.getElementById('export-run-id');
   const exportIdsInput = document.getElementById('export-claim-ids');
 
-  function updateExportScope(selected) {
+  function updateExportScope() {
     if (!exportBtn) return;
-    if (selected.length) {
+    if (selected.size) {
       // A ticked selection is the most specific thing on screen, so it wins.
-      exportIdsInput.value = selected.join(',');
+      exportIdsInput.value = Array.from(selected).join(',');
       exportRunInput.value = '';
       exportBtn.disabled = false;
-      exportNote.textContent = `${selected.length} selected claim${selected.length === 1 ? '' : 's'}`;
+      exportNote.textContent = `${selected.size} selected claim${selected.size === 1 ? '' : 's'}`;
       return;
     }
     exportIdsInput.value = '';
-    exportRunInput.value = runFilter || '';
-    exportBtn.disabled = !runFilter;
-    exportNote.textContent = runFilter
-      ? `fetch ${runFilter} only`
+    exportRunInput.value = state.runFilter || '';
+    exportBtn.disabled = !state.runFilter;
+    exportNote.textContent = state.runFilter
+      ? `fetch ${state.runFilter} only`
       : 'choose a fetch ID or tick some claims';
   }
 
   function updateBatchUI() {
-    const selected = selectedIds();
-    countEl.textContent = `${selected.length} selected`;
-    processBtn.disabled = selected.length === 0;
-    updateExportScope(selected);
+    countEl.textContent = `${selected.size} selected`;
+    processBtn.disabled = selected.size === 0;
+    if (clearSelection) clearSelection.hidden = selected.size === 0;
+    if (selectAllCheckbox) {
+      const onPage = checkboxes();
+      selectAllCheckbox.checked = onPage.length > 0 && onPage.every((cb) => cb.checked);
+    }
+    if (selectAllMatching) {
+      selectAllMatching.hidden = state.matching <= state.limit;
+      selectAllMatching.textContent = `Select all ${state.matching} matching`;
+    }
+    updateExportScope();
   }
 
-  checkboxes().forEach((cb) => cb.addEventListener('change', updateBatchUI));
-  // Claims arriving from a fetch run are rendered already checked, so the
-  // count and the Process button have to reflect that before any click.
-  updateBatchUI();
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', () => {
+      checkboxes().forEach((cb) => {
+        cb.checked = selectAllCheckbox.checked;
+        if (cb.checked) selected.add(cb.value);
+        else selected.delete(cb.value);
+      });
+      updateBatchUI();
+    });
+  }
 
-  // Filtering by fetch run is done client-side so switching between batches is
-  // instant and does not reload (or re-run the rollup for) the whole folder.
+  if (selectAllMatching) {
+    selectAllMatching.addEventListener('click', () => {
+      selectAllMatching.disabled = true;
+      fetch('/api/claims/matching-ids?' + params().toString())
+        .then((r) => r.json())
+        .then((data) => {
+          (data.claim_ids || []).forEach((id) => selected.add(id));
+          checkboxes().forEach((cb) => { cb.checked = selected.has(cb.value); });
+          updateBatchUI();
+        })
+        .finally(() => { selectAllMatching.disabled = false; });
+    });
+  }
+
+  if (clearSelection) {
+    clearSelection.addEventListener('click', () => {
+      selected.clear();
+      checkboxes().forEach((cb) => { cb.checked = false; });
+      updateBatchUI();
+    });
+  }
+
+  restoreChecks();
+  updateBatchUI();
+  updatePager({ matching: state.matching, offset: state.offset, limit: state.limit });
+
+  // Filtering by fetch run is a filter like any other now, so it goes to the
+  // server with the rest rather than hiding rows the browser already has.
   const runSelect = document.getElementById('fetch-run-select');
   if (runSelect) {
-    runFilter = runSelect.value || '';
+    state.runFilter = runSelect.value || '';
     runSelect.addEventListener('change', () => {
-      runFilter = runSelect.value || '';
-      applyFilter();
-      // Keep the address bar in step, so a reload, a bookmark or a shared link
-      // lands on the same batch rather than silently on the whole folder.
-      const url = new URL(window.location.href);
-      if (runFilter) url.searchParams.set('fetch_run', runFilter);
-      else url.searchParams.delete('fetch_run');
-      window.history.replaceState({}, '', url);
+      state.runFilter = runSelect.value || '';
+      load(true);
     });
   }
 
   const fetchRunOnlyBtn = document.getElementById('fetch-run-only');
   if (fetchRunOnlyBtn) {
     fetchRunOnlyBtn.addEventListener('click', () => {
-      fetchRunOnly = !fetchRunOnly;
-      fetchRunOnlyBtn.classList.toggle('active', fetchRunOnly);
-      fetchRunOnlyBtn.textContent = fetchRunOnly ? 'Show all claims' : 'Show only these';
-      applyFilter();
+      state.runOnly = !state.runOnly;
+      fetchRunOnlyBtn.classList.toggle('active', state.runOnly);
+      fetchRunOnlyBtn.textContent = state.runOnly ? 'Show all claims' : 'Show only these';
+      load(true);
     });
   }
 
-  if (selectAllCheckbox) {
-    selectAllCheckbox.addEventListener('change', () => {
-      visibleRows.forEach((li) => {
-        const cb = li.querySelector('.claim-checkbox');
-        if (cb) cb.checked = selectAllCheckbox.checked;
-      });
-      updateBatchUI();
-    });
-  }
+  // ------------------------------------------------------------ background pass
 
-  function statusLabel(state) {
-    switch (state.status) {
+  // Poll while the folder is being read, so the counts and the quality
+  // filters stop being a snapshot of the moment the page loaded. Stops as
+  // soon as the pass finishes - there is nothing further to report.
+  let scanTimer = null;
+  function watchScan() {
+    scanTimer = setInterval(() => {
+      fetch('/api/claims/scan-progress').then((r) => r.json()).then((s) => {
+        if (!s.running) {
+          clearInterval(scanTimer);
+          scanTimer = null;
+          if (scanProgress) scanProgress.hidden = true;
+          // One last load, so a filter that was searching a partial folder
+          // now shows the whole answer without the reviewer re-clicking it.
+          if (state.tags.size) load(false);
+          return;
+        }
+        if (scanProgress && !state.tags.size) {
+          scanProgress.hidden = false;
+          scanProgress.textContent =
+            `Reading the folder in the background: ${s.scanned} of ${s.total} claims so far.`;
+        }
+      }).catch(() => {});
+    }, 3000);
+  }
+  watchScan();
+
+  // ------------------------------------------------------------ processing
+
+  function statusLabel(st) {
+    switch (st.status) {
       case 'not_started': return 'Not processed';
       case 'running': {
-        const docs = `${state.processed + state.cached + state.failed}/${state.total}`;
-        const pages = state.total_pages ? `, ${state.pages_done || 0}/${state.total_pages} pages` : '';
+        const docs = `${st.processed + st.cached + st.failed}/${st.total}`;
+        const pages = st.total_pages ? `, ${st.pages_done || 0}/${st.total_pages} pages` : '';
         return `Processing ${docs}${pages}`;
       }
-      case 'completed': return `Processed (${state.processed + state.cached}/${state.total})`;
-      case 'failed': return `Failed (${state.failed} error${state.failed !== 1 ? 's' : ''})`;
+      case 'completed': return `Processed (${st.processed + st.cached}/${st.total})`;
+      case 'failed': return `Failed (${st.failed} error${st.failed !== 1 ? 's' : ''})`;
       case 'interrupted': return 'Interrupted - retry';
-      default: return state.status;
+      default: return st.status;
     }
   }
 
   function pollClaim(claimId, onDone) {
-    const li = list.querySelector(`li[data-claim-id="${CSS.escape(claimId)}"]`);
-    const badge = li ? li.querySelector('[data-badge]') : null;
     const timer = setInterval(() => {
-      fetch(`/api/claims/${claimId}/process/status`).then((r) => r.json()).then((state) => {
+      fetch(`/api/claims/${claimId}/process/status`).then((r) => r.json()).then((st) => {
+        // The row may not be on the page any more - the reviewer can turn to
+        // page four while forty claims process - so the badge is optional.
+        const li = list.querySelector(`li[data-claim-id="${CSS.escape(claimId)}"]`);
+        const badge = li ? li.querySelector('[data-badge]') : null;
         if (badge) {
-          badge.textContent = statusLabel(state);
-          badge.className = 'badge status-' + state.status;
+          badge.textContent = statusLabel(st);
+          badge.className = 'badge status-' + st.status;
         }
-        if (state.status !== 'running') {
+        if (st.status !== 'running') {
           clearInterval(timer);
           onDone();
         }
@@ -227,8 +355,16 @@
 
   if (processBtn) {
     processBtn.addEventListener('click', () => {
-      const ids = selectedIds();
+      const ids = Array.from(selected);
       if (!ids.length) return;
+      // Selection now outlives the page it was made on, so the count can be
+      // far larger than what is on screen - and each claim is real Textract
+      // spend. Worth one question before starting a batch nobody can see.
+      if (ids.length > state.limit
+          && !window.confirm(`Process ${ids.length} claim(s)?\n\nThis runs Textract on every `
+                             + 'document of each one, which costs money and cannot be undone.')) {
+        return;
+      }
       processBtn.disabled = true;
       batchStatusEl.textContent = `Starting ${ids.length} claim(s)...`;
 
