@@ -421,6 +421,31 @@ window.loadRules = function () {
         </div>`).join('');
     }
 
+    // The part of a field the rule actually matched, marked inside the rest
+    // of it. A bill line can run to three hundred characters and the match be
+    // two words of it; without this the reviewer has to find them by eye.
+    //
+    // The spans are offsets the engine computed against this exact string, so
+    // the text is cut on them and each piece escaped separately - escaping
+    // first would move every offset along by the length of each entity.
+    function mark(text, spans) {
+      const str = String(text == null ? '' : text);
+      const ranges = (spans || [])
+        .filter((s) => Array.isArray(s) && s[1] > s[0] && s[0] >= 0 && s[1] <= str.length)
+        .sort((a, b) => a[0] - b[0]);
+      if (!ranges.length) return escapeHtml(str);
+      let out = '';
+      let at = 0;
+      for (const [from, to] of ranges) {
+        // Overlapping spans would otherwise emit the shared text twice.
+        if (from < at) continue;
+        out += escapeHtml(str.slice(at, from))
+          + '<mark class="rule-match-hit">' + escapeHtml(str.slice(from, to)) + '</mark>';
+        at = to;
+      }
+      return out + escapeHtml(str.slice(at));
+    }
+
     // Where the rule found what it found, in full. A verdict names one
     // place and stops; the question a reviewer actually has is whether it
     // passed for the right reason, and that needs all of them with counts.
@@ -438,14 +463,15 @@ window.loadRules = function () {
           + (row.bbox ? ` data-bbox='${escapeHtml(JSON.stringify(row.bbox))}'` : '');
         return `<tr>
           <td><a href="#" class="rule-ref" ${attrs} title="${escapeHtml(row.file)}">${escapeHtml(name)}</a>${pages}</td>
-          <td><span class="rule-match-text">${escapeHtml(row.text)}</span>${
-            row.context ? `<span class="rule-match-context">in ${escapeHtml(row.context)}</span>` : ''}</td>
+          <td><span class="rule-match-text">${mark(row.text, row.spans)}</span>${
+            row.context ? `<span class="rule-match-context">in ${mark(row.context, row.context_spans)}</span>` : ''}</td>
           <td class="rule-match-count">${row.count}</td>
         </tr>`;
       }).join('');
-      // open by default: the evidence is the point, and a reviewer who wants
-      // it out of the way can shut it per rule.
-      return `<details class="rule-matches" open>
+      // Shut by default. A claim with a dozen rules on it is a dozen tables
+      // of working, and the verdict is what the panel is read for; the
+      // summary line still says how much there is to open.
+      return `<details class="rule-matches">
         <summary>Found in ${docs}, ${total}${extra}</summary>
         <table class="rule-match-table">
           <thead><tr><th>Document</th><th>What matched</th><th>Count</th></tr></thead>

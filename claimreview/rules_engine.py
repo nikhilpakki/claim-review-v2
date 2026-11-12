@@ -506,7 +506,7 @@ MAX_MATCH_ROWS = 50
 
 def _match_table(entries, limit=MAX_MATCH_ROWS):
     """{'rows', 'total', 'documents', 'shown', 'truncated'} from an iterable
-    of (file, page, text, context, bbox, method).
+    of {file, page, text, context, bbox, method, spans, context_spans}.
 
     `text` is what matched; `context` is the other side of the field it sat
     in, kept separate rather than glued on because which half matched is
@@ -519,8 +519,10 @@ def _match_table(entries, limit=MAX_MATCH_ROWS):
     is two, because that is the claim repeating itself.
     """
     rows, seen = {}, set()
-    for file_name, page, text, context, bbox, method in entries:
-        text = (text or "").strip()
+    for entry in entries:
+        file_name, page = entry["file"], entry.get("page")
+        raw, raw_context = entry.get("text") or "", entry.get("context") or ""
+        text = raw.strip()
         if not text:
             continue
         folded = text.casefold()
@@ -529,10 +531,19 @@ def _match_table(entries, limit=MAX_MATCH_ROWS):
         seen.add((file_name, page, folded))
         row = rows.get((file_name, folded))
         if row is None:
+            # The spans came from the untrimmed text the engine matched, and
+            # the row shows the trimmed one, so they move by whatever strip()
+            # took off the front or every mark lands a few characters late.
             row = rows[(file_name, folded)] = {
-                "file": file_name, "text": text, "context": (context or "").strip(),
-                "method": method, "count": 0, "pages": [],
-                "page": page, "bbox": bbox,
+                "file": file_name, "text": text, "context": raw_context.strip(),
+                "method": entry.get("method"), "count": 0, "pages": [],
+                "page": page, "bbox": entry.get("bbox"),
+                "spans": _shift_spans(entry.get("spans"),
+                                      len(raw) - len(raw.lstrip()), len(text)),
+                "context_spans": _shift_spans(
+                    entry.get("context_spans"),
+                    len(raw_context) - len(raw_context.lstrip()),
+                    len(raw_context.strip())),
             }
         row["count"] += 1
         if page is not None and page not in row["pages"]:
@@ -550,12 +561,28 @@ def _match_table(entries, limit=MAX_MATCH_ROWS):
     }
 
 
-def _hit_entries(doc_page_hits):
-    """(file, page, text, context, bbox, method) for every keyword/value hit.
+def _shift_spans(spans, shift, length):
+    """Spans moved by `shift` and clipped to `length`, dropping any that fall
+    outside - a row renders the trimmed text, not what the engine matched."""
+    out = []
+    for start, stop in spans or []:
+        start, stop = start - shift, min(stop - shift, length)
+        if 0 <= start < stop:
+            out.append([start, stop])
+    return out
+
+
+def _hit_entries(doc_page_hits, compiled=None, fallback_term=None):
+    """One entry per keyword/value hit, with where in the field it matched.
 
     The matched side is read the way doc_tags reads it - key when the hit was
     on a key, value otherwise - so the table and the tag badges never disagree
     about what a page matched.
+
+    `term` is carried on the hit by every stage that looks for a phrase, so a
+    highlight marks the phrase that actually matched rather than whichever of
+    the rule's phrases happens to appear first. A CSV-value rule searches for
+    one value and records no term, which is what `fallback_term` is.
     """
     for file_name, pages in doc_page_hits.items():
         for page_number, _matched, _best, hits in pages:
@@ -563,10 +590,16 @@ def _hit_entries(doc_page_hits):
                 on_key = hit.get("matched_on") == "key"
                 text = hit.get("key") if on_key else hit.get("value")
                 context = hit.get("value") if on_key else hit.get("key")
-                bbox = (hit.get("key_bbox") if on_key else hit.get("value_bbox")) \
-                    or hit.get("value_bbox") or hit.get("key_bbox")
-                yield (file_name, hit.get("page_number") or page_number,
-                       text, context, bbox, hit.get("method"))
+                bbox = (hit.get("key_bbox") if on_key else hit.get("value_bbox"))                     or hit.get("value_bbox") or hit.get("key_bbox")
+                yield {
+                    "file": file_name,
+                    "page": hit.get("page_number") or page_number,
+                    "text": text, "context": context, "bbox": bbox,
+                    "method": hit.get("method"),
+                    "spans": matching.match_spans(
+                        text, hit.get("method"),
+                        term=hit.get("term") or fallback_term, compiled=compiled),
+                }
 
 
 def _doc_hit(page_hits, page_scope):
@@ -616,6 +649,9 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
         if not row or not value:
             return {"status": "no_data", "message": f"No CSV value for '{csv_field}' on this claim"}
         label = f"'{value}'"
+        # search_kvs records no term, so the value it searched for is what a
+        # highlight has to be told about.
+        highlight_pattern, highlight_term = None, value
 
         def run_search(subset, locations=None):
             return search.search_kvs(subset, value, locations=locations)
@@ -632,6 +668,9 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
                         matching.derive_terms(keyword, match_config["regex"]))
         except search.InvalidKeywordPattern as exc:
             raise ValueError(f"Invalid regex pattern: {exc}") from exc
+        # The same compiled pattern the regex stage ran, so a regex hit can be
+        # marked exactly where it matched rather than approximately.
+        highlight_pattern, highlight_term = prepared[0], keyword
         label = f"pattern '{keyword}'" if match_config["regex"] else f"'{keyword}'"
         # Only worth spelling out when the phrases differ from what was typed.
         if prepared[1] and prepared[1] != [keyword]:
@@ -661,7 +700,8 @@ def _evaluate_field_present(claim_id, docs, config, settings, ctx):
     # Carried on the fail as well as the pass: a rule that wanted the value in
     # every document and found it in three of five is asking the reviewer to
     # judge the other two, which needs the three in front of them.
-    matches = _match_table(_hit_entries(doc_page_hits))
+    matches = _match_table(_hit_entries(doc_page_hits, compiled=highlight_pattern,
+                                        fallback_term=highlight_term))
 
     if scope == "all_docs":
         missing = sorted(name for name, hit in doc_hit.items() if not hit)
@@ -825,8 +865,12 @@ def _evaluate_field_consistency(claim_id, docs, config, settings, ctx):
         "issues": issues,
         # Every document the concept was read from, with how often - which is
         # the evidence behind both "they agree" and "they do not".
+        # No spans: the row's text is the whole extracted answer, and marking
+        # part of a value that matched entire would claim a precision the
+        # comparison does not have.
         "matches": _match_table(
-            (occ["file"], occ["page_number"], occ["answer"], concept, None, "query")
+            {"file": occ["file"], "page": occ["page_number"], "text": occ["answer"],
+             "context": concept, "bbox": None, "method": "query"}
             for occ in occurrences),
         "distinct_values": distinct_values,
         "occurrences": occurrences, "csv_value": csv_value,
@@ -1125,13 +1169,22 @@ def _evaluate_extract_value(claim_id, docs, config, settings, ctx):
     distinct = _distinct_values(findings)
     # The values grouped by document, with counts - the same table the keyword
     # rules carry, so one panel does not have two ways of showing "where".
-    matches = _match_table(
-        (finding["file"], finding["page_number"], finding["value"],
-         # A pattern that matched a field containing nothing but the value
-         # has no context to add, and "'36' in '36'" is worse than silence.
-         "" if finding["source"].strip() == finding["value"] else finding["source"],
-         finding.get("value_bbox") or finding.get("key_bbox"), "regex")
-        for finding in findings)
+    def _extract_entry(finding):
+        # A pattern that matched a field containing nothing but the value has
+        # no context to add, and "'36' in '36'" is worse than silence.
+        context = ("" if finding["source"].strip() == finding["value"]
+                   else finding["source"])
+        return {
+            "file": finding["file"], "page": finding["page_number"],
+            "text": finding["value"], "context": context,
+            "bbox": finding.get("value_bbox") or finding.get("key_bbox"),
+            "method": "regex",
+            # The value is in the source verbatim - that is where it was read
+            # from - so no stage has to be consulted to find it there.
+            "context_spans": matching.literal_spans(context, finding["value"]),
+        }
+
+    matches = _match_table(_extract_entry(finding) for finding in findings)
     note = (f" (stopped at {extraction.MAX_FINDINGS} matches - the pattern is "
             "matching far more than it should)" if truncated else "")
 

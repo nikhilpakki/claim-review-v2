@@ -476,6 +476,13 @@ kbd {
 .rule-match-pages { display: block; color: var(--muted); font-size: 0.72rem; }
 .rule-match-text { display: block; }
 .rule-match-context { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 0.1rem; }
+/* The stretch of the field the rule matched. Marked rather than coloured so
+   it survives a copy-paste out of the panel and reads in both themes. */
+.rule-match-hit {
+  background: #fef08a; color: inherit; border-radius: 2px; padding: 0 1px;
+  font-weight: 600;
+}
+.rule-match-context .rule-match-hit { font-weight: 600; color: var(--text); }
 
 /* Marking the page you are reading as evidence. Lives in the page header
    beside the tags, so it is where your eye already is when you find

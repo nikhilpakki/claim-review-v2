@@ -373,3 +373,144 @@ def describe(config, terms=None):
     parts.append("case insensitive" if config["case_insensitive"]
                  else "case sensitive")
     return " · ".join(parts)
+
+
+# ------------------------------------------------------------ where it matched
+
+# How many highlights one field is allowed. A pattern that matches forty times
+# in one cell has told the reviewer what they need after the first few, and
+# marking the whole cell is the same as marking none of it.
+MAX_SPANS = 12
+
+
+def _normalized_map(text):
+    """(normalized text, raw index of each normalized character).
+
+    search._normalize_for_fuzzy collapses every run of non-word characters to
+    one space and trims the ends, so an offset into what it returns means
+    nothing in the text a reviewer is reading. Carrying the index each
+    character came from is what lets a match found on the normalized form be
+    shown on the original.
+    """
+    text = text or ""
+    chars, origins = [], []
+    index, end = 0, len(text)
+    while index < end:
+        char = text[index]
+        if char.isalnum() or char == "_":
+            chars.append(char)
+            origins.append(index)
+            index += 1
+            continue
+        run = index
+        while run < end and not (text[run].isalnum() or text[run] == "_"):
+            run += 1
+        chars.append(" ")
+        origins.append(index)
+        index = run
+    start, stop = 0, len(chars)
+    while start < stop and chars[start] == " ":
+        start += 1
+    while stop > start and chars[stop - 1] == " ":
+        stop -= 1
+    return "".join(chars[start:stop]), origins[start:stop]
+
+
+def _raw_span(origins, start, stop, text_len):
+    """A span on the normalized text, as a span on the original."""
+    if start >= stop or start >= len(origins):
+        return None
+    stop = min(stop, len(origins))
+    raw_start = origins[start]
+    # The last matched character, not the one after it: a match ending on a
+    # collapsed run of punctuation would otherwise swallow that whole run.
+    raw_end = min(origins[stop - 1] + 1, text_len)
+    return (raw_start, raw_end) if raw_end > raw_start else None
+
+
+def match_spans(text, method, term=None, compiled=None, threshold=None):
+    """[(start, end), ...] of what matched, as offsets into `text` as given.
+
+    Driven by the stage that actually found the hit rather than by trying
+    each in turn, so the highlight says what the rule did and not what it
+    might have done:
+
+      regex    the pattern is run over the raw field, so its own spans are
+               already the answer.
+      exact    the phrase is found on the normalized text and mapped back.
+      partial  there is no literal occurrence - that is what tolerant means -
+               so the stretch rapidfuzz scored is marked instead.
+
+    Everything else returns nothing on purpose. A "whole field" or soundex
+    hit is a statement about the field entire; marking part of it would claim
+    a precision the match does not have.
+    """
+    text = text or ""
+    if not text:
+        return []
+    method = (method or "").lower()
+    spans = []
+
+    if method.startswith(("regex", "keyword")) and compiled is not None:
+        for found in compiled.finditer(text):
+            if found.end() > found.start():
+                spans.append((found.start(), found.end()))
+            if len(spans) >= MAX_SPANS:
+                break
+        return spans
+
+    needle = _normalize_for_span(term)
+    if not needle:
+        return []
+    normalized, origins = _normalized_map(text)
+    if not normalized:
+        return []
+
+    if method.startswith("exact"):
+        hay = normalized.lower()
+        probe = needle.lower()
+        at = hay.find(probe)
+        while at != -1 and len(spans) < MAX_SPANS:
+            span = _raw_span(origins, at, at + len(probe), len(text))
+            if span:
+                spans.append(span)
+            at = hay.find(probe, at + max(1, len(probe)))
+        return spans
+
+    if method.startswith("fuzzy") and "whole" not in method and "soundex" not in method:
+        try:
+            from rapidfuzz import fuzz as _fuzz
+            aligned = _fuzz.partial_ratio_alignment(needle.lower(), normalized.lower(),
+                                                    score_cutoff=threshold or 0)
+        except Exception:
+            return []
+        if aligned is None:
+            return []
+        span = _raw_span(origins, aligned.dest_start, aligned.dest_end, len(text))
+        return [span] if span else []
+
+    return []
+
+
+def _normalize_for_span(term):
+    return search._normalize_for_fuzzy(str(term or "").strip())
+
+
+def literal_spans(text, needle, limit=MAX_SPANS):
+    """Where `needle` sits inside `text`, compared the tolerant way.
+
+    Used where the matched text is known verbatim - an extracted value inside
+    the field it was read out of - so no stage has to be consulted.
+    """
+    probe = _normalize_for_span(needle)
+    if not probe or not text:
+        return []
+    normalized, origins = _normalized_map(text)
+    hay, probe = normalized.lower(), probe.lower()
+    spans, at = [], hay.find(probe)
+    while at != -1 and len(spans) < limit:
+        span = _raw_span(origins, at, at + len(probe), len(text))
+        if span:
+            spans.append(span)
+        at = hay.find(probe, at + max(1, len(probe)))
+    return spans
