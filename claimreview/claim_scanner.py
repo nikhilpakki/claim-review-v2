@@ -1,8 +1,37 @@
 import os
+import threading
+import time
 
 from flask import current_app
 
 from . import cache_store
+
+# A claim folder's file list, shared between requests for a few seconds.
+#
+# Ten reviewers looking at one folder were each walking every claim's
+# directory tree separately, for an answer that is the same for all of them
+# and that changes only when a fetch downloads something. The walk is the
+# expensive half of listing a claim - hash_file is already memoized by
+# (mtime, size), so the bytes are rarely re-read, but os.walk plus an os.stat
+# per file is not free on network storage.
+#
+# Kept short deliberately. A claim bundle is written once by a fetch and then
+# only read, so nothing a reviewer does changes this list; a few seconds is
+# enough to collapse a burst of concurrent page loads into one walk, and short
+# enough that a claim landing mid-session appears without anybody waiting.
+SCAN_CACHE_SECONDS = 20.0
+_scan_cache = {}        # claim_path -> (expires_at, [doc, ...])
+_scan_cache_lock = threading.Lock()
+
+
+def forget_scans(claim_path=None):
+    """Drop the cached file list for one claim, or all of them. Called when
+    something has deliberately changed what is on disk."""
+    with _scan_cache_lock:
+        if claim_path is None:
+            _scan_cache.clear()
+        else:
+            _scan_cache.pop(claim_path, None)
 
 
 def list_claims(root_dir):
@@ -25,6 +54,15 @@ def scan_claim(claim_path):
     routes/cache lookups) and group is 'payer'/'provider'/other top-level
     folder name, for display grouping.
     """
+    now = time.monotonic()
+    with _scan_cache_lock:
+        hit = _scan_cache.get(claim_path)
+        if hit and hit[0] > now:
+            # Copied, not shared: callers add file_hash and cached_result to
+            # these dicts, and one request's Textract results must not end up
+            # held in a cache the next request reads.
+            return [dict(doc) for doc in hit[1]]
+
     supported = current_app.config["SUPPORTED_EXTENSIONS"]
     docs = []
     for dirpath, _dirs, files in os.walk(claim_path):
@@ -48,6 +86,9 @@ def scan_claim(claim_path):
                 "group": top or "(root)",
             })
     docs.sort(key=lambda d: d["rel_path"].lower())
+    with _scan_cache_lock:
+        _scan_cache[claim_path] = (time.monotonic() + SCAN_CACHE_SECONDS,
+                                   [dict(doc) for doc in docs])
     return docs
 
 

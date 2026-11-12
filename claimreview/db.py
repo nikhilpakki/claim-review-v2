@@ -507,7 +507,7 @@ def _migrate(conn):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
-# Several people use this at once, so every connection needs the same two
+# Several people use this at once, so every connection needs the same
 # settings. WAL lets readers work while a writer holds the file (measured 4x
 # faster with 10 concurrent writers), and the busy timeout makes a writer wait
 # for its turn instead of raising "database is locked" - a fetch doing bulk
@@ -515,9 +515,18 @@ def _migrate(conn):
 BUSY_TIMEOUT_MS = 15000
 
 
-def _configure(conn):
+def _configure(conn, journal=False):
+    """Per-connection settings.
+
+    journal_mode is deliberately not among them. It is a property of the
+    database file, not of a connection: set once, every connection that opens
+    it afterwards is in WAL. Re-asserting it per connection takes a lock on
+    the file to do nothing, which with sixteen request threads and ten
+    reviewers is a queue in front of every page load. init_db sets it.
+    """
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    if journal:
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     # Durable enough for this workload and much cheaper per commit than FULL;
     # WAL already protects against application crashes, and the cost of losing
@@ -554,7 +563,7 @@ def get_latest_runs():
 def init_db(app):
     with app.app_context():
         conn = _configure(sqlite3.connect(
-            app.config["DATABASE_PATH"], timeout=BUSY_TIMEOUT_MS / 1000))
+            app.config["DATABASE_PATH"], timeout=BUSY_TIMEOUT_MS / 1000), journal=True)
         conn.executescript(SCHEMA)
         _migrate(conn)
         conn.commit()

@@ -273,6 +273,24 @@ def page(ctx, matching, offset, limit, preselect=()):
 
 _lock = threading.Lock()
 _warmers = {}       # (root, user_id) -> state dict
+# At most one background pass at a time in the whole process, whoever it
+# belongs to. The work is almost entirely disk, so ten reviewers on one folder
+# meant ten threads reading it at once - slower for all of them than one
+# thread reading it ten times, and competing with the requests they were
+# waiting on. A pass that cannot have the slot waits for it rather than
+# doubling up.
+_warm_slot = threading.Semaphore(1)
+# How many passes are past the slot and actually reading the folder, as
+# opposed to queued behind it. Reported by the scan-progress endpoint so the
+# answer to "why is the box busy" does not have to be guessed at.
+_warm_active = 0
+
+
+def active_passes():
+    """How many background passes are reading a folder right now. One, at
+    most - see _warm_slot."""
+    with _lock:
+        return _warm_active
 
 
 def warm_state(root, user_id):
@@ -310,9 +328,13 @@ def warm_start(app, root, user_id, global_fp=None, total=None):
             return state
         state = {"running": True, "scanned": 0, "total": total or 0, "stop": False,
                  "completed": False, "fp": global_fp}
-        for other_key, other in _warmers.items():
-            if other_key != key:
-                other["stop"] = True      # a different root is no longer wanted
+        for (other_root, _other_user), other in _warmers.items():
+            # Only a pass over a *different folder* is no longer wanted. This
+            # compared the whole key, so a second reviewer opening the same
+            # folder cancelled the first one's pass - with ten of them nobody's
+            # ever finished, and every page load started them all again.
+            if other_root != root:
+                other["stop"] = True
         _warmers[key] = state
     thread = threading.Thread(target=_warm, args=(app, root, user_id, state),
                              name=f"claim-warm-{user_id}", daemon=True)
@@ -324,8 +346,16 @@ def _warm(app, root, user_id, state):
     """Walk the folder filling the rollup cache. Runs with its own app
     context, so it gets its own SQLite connection (WAL, so it does not block
     the reviewer's reads) and its own hash memo flush on the way out."""
+    global _warm_active
+    entered = False
     try:
-        with app.app_context():
+        # Queued, not run alongside: see _warm_slot. Acquired before the app
+        # context so a waiting pass is not holding a database connection open
+        # for the length of somebody else's pass.
+        with _warm_slot, app.app_context():
+            entered = True
+            with _lock:
+                _warm_active += 1
             ctx = Context(root, user_id)
             with _lock:
                 state["total"] = len(ctx.claims)
@@ -361,3 +391,5 @@ def _warm(app, root, user_id, state):
     finally:
         with _lock:
             state["running"] = False
+            if entered:
+                _warm_active = max(0, _warm_active - 1)

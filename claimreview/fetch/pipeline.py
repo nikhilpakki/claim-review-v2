@@ -37,6 +37,7 @@ from typing import Any, Callable, Mapping
 import psycopg
 from psycopg import sql
 
+from .. import claim_scanner
 from . import downloader, extractor, queries
 from .tables import (
     DEDUPLICATION_RULES,
@@ -563,6 +564,8 @@ def cleanup_bundles(destination: Path) -> None:
             shutil.rmtree(child)
         elif child.is_file():
             child.unlink()
+    # Whatever was remembered about those folders' contents is now wrong.
+    claim_scanner.forget_scans()
 
 
 # -------------------------------------------------------------------- run

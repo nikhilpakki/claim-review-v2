@@ -13,7 +13,7 @@ again from the same run parameters.
 import os
 import shutil
 
-from .. import fetch_progress, rollup_cache
+from .. import claim_scanner, fetch_progress, rollup_cache
 from . import runs
 
 
@@ -116,6 +116,10 @@ def delete_run_bundles(run_id):
         deleted += 1
         bytes_freed += size
         rollup_cache.invalidate(claim_id)
+        # The folder's file list is cached for a few seconds and shared
+        # between reviewers; leaving a deleted folder in it would hand the
+        # next request paths that are no longer there.
+        claim_scanner.forget_scans(folder)
 
     runs.mark_bundles_deleted(run_id)
     # `kept` is reported rather than silently implied: a reviewer who presses

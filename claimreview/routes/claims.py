@@ -193,7 +193,10 @@ def api_scan_progress():
     root = root_state.get_active_root()
     if not root:
         return jsonify({"running": False, "scanned": 0, "total": 0})
-    return jsonify(claim_index.warm_state(root, users.current_user_id()))
+    return jsonify({**claim_index.warm_state(root, users.current_user_id()),
+                    # One at most, whoever it belongs to. Reported so "why is
+                    # the box busy" has an answer that is not a guess.
+                    "passes_running": claim_index.active_passes()})
 
 
 @bp.route("/claims/export.csv", methods=["GET", "POST"])
