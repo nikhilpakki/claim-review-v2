@@ -17,9 +17,12 @@ WorkingDirectory=/opt/claim-review
 EnvironmentFile=/opt/claim-review/.env
 
 # One worker, many threads - see wsgi.py for why the worker count must stay 1.
-# --timeout 0 because a request never does the long work (fetching and
-# processing run on background threads), but Textract calls inside a request
-# can still be slow, and a worker killed mid-flight loses in-memory progress.
+# A request never does the long work: fetching, processing and the folder scan
+# all run on background threads, so 120s is generous for anything a reviewer
+# waits on. It is not 0 (no limit) on purpose - a worker wedged on a stuck
+# network read would otherwise never be replaced - but it must stay well above
+# the slowest honest request, because a worker killed mid-flight loses the
+# in-memory progress every /fetch and /process page is polling for.
 ExecStart=/opt/claim-review/.venv/bin/gunicorn \
     --workers 1 \
     --threads 16 \
