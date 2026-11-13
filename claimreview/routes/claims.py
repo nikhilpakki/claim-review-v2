@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode
 
 from flask import (Blueprint, current_app, jsonify, redirect, render_template,
                    request, stream_with_context, url_for)
@@ -49,6 +50,50 @@ def _fetch_run_context(claim_ids):
     }
 
 
+# The filters that describe a claims list. Named once: they are what
+# _page_params reads, what the row links carry forward, and what is allowed
+# back out of a `back` parameter - a list that drifted apart would lose a
+# filter on the way to a claim or let an unknown one through on the way home.
+LIST_PARAMS = ("offset", "q", "status", "tags", "fetch_run", "run_only")
+
+
+def _list_query(params):
+    """The current list as a query string, for a row to carry to its claim.
+
+    Rebuilt from the parsed params rather than passed through from
+    request.query_string, so it holds what the page is actually showing and
+    nothing else.
+    """
+    pairs = []
+    if params["offset"]:
+        pairs.append(("offset", params["offset"]))
+    if params["query"]:
+        pairs.append(("q", params["query"]))
+    if params["status_filter"] not in ("all", "", None):
+        pairs.append(("status", params["status_filter"]))
+    if params["tags"]:
+        pairs.append(("tags", ",".join(params["tags"])))
+    if params["run_filter"]:
+        pairs.append(("fetch_run", params["run_filter"]))
+    if params["run_only"]:
+        pairs.append(("run_only", "1"))
+    return urlencode(pairs)
+
+
+def _back_query(raw):
+    """A `back` parameter, reduced to filters this page recognises.
+
+    It arrives in a URL, so it is somebody's input and is treated as such:
+    the keys are checked against LIST_PARAMS and the whole thing is
+    re-encoded, which is what keeps it a query string on this route rather
+    than something that could point the Back link elsewhere.
+    """
+    if not raw:
+        return ""
+    return urlencode([(k, v) for k, v in parse_qsl(raw, keep_blank_values=False)
+                      if k in LIST_PARAMS])
+
+
 def _page_params():
     """The filters the page is showing, read from the query string.
 
@@ -78,12 +123,19 @@ def _claims_page(ctx, params, preselect):
         ctx, query=params["query"], status_filter=params["status_filter"],
         tags=params["tags"], run_filter=params["run_filter"],
         run_only=params["run_only"], preselect=preselect)
-    entries = claim_index.page(ctx, matching, params["offset"], params["limit"],
+    # A page number outlives the list it was taken from: a reviewer comes back
+    # to page two of a filter that now matches five claims, or narrows one
+    # while deep in a folder. Reading past the end gave an empty list under a
+    # pager saying "16-5 of 5"; the last page is the honest answer.
+    offset = params["offset"]
+    if offset >= len(matching):
+        offset = max(0, ((len(matching) - 1) // params["limit"]) * params["limit"])             if matching else 0
+    entries = claim_index.page(ctx, matching, offset, params["limit"],
                                preselect=preselect)
     warm = claim_index.warm_state(ctx.root, ctx.user_id)
     return {
         "claims": entries,
-        "offset": params["offset"],
+        "offset": offset,
         "limit": params["limit"],
         "matching": len(matching),
         "folder_total": len(ctx.claims),
@@ -99,6 +151,9 @@ def _claims_page(ctx, params, preselect):
         # run that was selected is not applying. The dropdown still shows it,
         # so the page has to say so rather than let the two contradict.
         "searched_all": searched_all,
+        # Carried into each row's link, so following a claim and coming back
+        # returns to this list rather than to the whole folder.
+        "list_query": _list_query({**params, "offset": offset}),
         # The claims the reviewer is actually looking at, for the background
         # pass to read before the rest of the folder.
         "priority_ids": [claim["claim_id"] for claim, _state
@@ -143,6 +198,7 @@ def list_claims_view():
         for run in fetch_run_options if run["run_id"] in here_counts
     ]
     return render_template("claims_list.html", page=data, active_root=root,
+                           list_query=data["list_query"],
                            settings=ctx.settings, fetch_run=fetch_run,
                            fetch_run_options=fetch_run_options,
                            page_size=claim_index.PAGE_SIZE,
@@ -176,9 +232,10 @@ def api_claims_page():
                            first=data["priority_ids"])
     return jsonify({
         **{k: v for k, v in data.items()
-           if k not in ("claims", "priority_ids")},
+           if k not in ("claims", "priority_ids", "list_query")},
         "rows_html": render_template("partials/claim_rows.html",
-                                     claims=data["claims"], settings=ctx.settings),
+                                     claims=data["claims"], settings=ctx.settings,
+                                     list_query=data["list_query"]),
     })
 
 
@@ -441,6 +498,9 @@ def claim_detail(claim_id):
                            summary=summary, amounts=amounts,
                            discharge_summary=discharge_summary,
                            has_sections=claim_sections.has_any_sections(docs),
+                           # The list this claim was opened from, so Back
+                           # returns to it rather than to the whole folder.
+                           back_query=_back_query(request.args.get("back")),
                            profile_notice=_profile_notice(docs, profile))
 
 

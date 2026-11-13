@@ -10,15 +10,40 @@
   // claims is no longer all in the DOM - fifteen of it are - so a filter the
   // browser applied to the rows it happens to hold would answer about the
   // page rather than about the folder.
+  // Read back out of the URL, which is where the filters live: the server
+  // rendered this list from them, and the controls have to agree with the
+  // rows. They did not - the state started empty however the page was
+  // reached - so arriving on a filtered list by Back, or by the link a claim
+  // carries home, showed the right claims under an "All" button, and the
+  // next click sent no filter at all and pulled in the whole folder.
+  const fromUrl = new URLSearchParams(window.location.search);
   const state = {
+    // The server's offset, not the url's: it clamps a page number that is
+    // past the end of a filter that has since got shorter, and the pager
+    // has to count from the page that was actually rendered.
     offset: Number(list.dataset.offset || 0),
     limit: Number(list.dataset.limit || 15),
     matching: Number(list.dataset.matching || 0),
-    status: 'all',
-    tags: new Set(),
-    runFilter: '',
-    runOnly: false,
+    status: fromUrl.get('status') || 'all',
+    tags: new Set((fromUrl.get('tags') || '').split(',').filter(Boolean)),
+    runFilter: fromUrl.get('fetch_run') || '',
+    runOnly: fromUrl.get('run_only') === '1',
   };
+
+  // And shown on the controls themselves, so the page does not quietly
+  // disagree with itself about what it is showing.
+  function showState() {
+    if (fromUrl.get('q')) textInput.value = fromUrl.get('q');
+    statusBar.querySelectorAll('.filter-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.status === state.status);
+    });
+    if (tagBar) {
+      tagBar.querySelectorAll('.tag-toggle').forEach((b) => {
+        b.classList.toggle('active', state.tags.has(b.dataset.tag));
+      });
+    }
+  }
+  showState();
 
   // Ticked claims, kept here rather than read off the checkboxes: the rows
   // they belong to are replaced on every page turn, and a selection that
@@ -319,7 +344,11 @@
   // server with the rest rather than hiding rows the browser already has.
   const runSelect = document.getElementById('fetch-run-select');
   if (runSelect) {
-    state.runFilter = runSelect.value || '';
+    // The server marks the selected option, so these already agree; read it
+    // only when the URL said nothing, so a dropdown that has not caught up
+    // cannot silently drop a run the page was filtered by.
+    if (!state.runFilter) state.runFilter = runSelect.value || '';
+    else runSelect.value = state.runFilter;
     runSelect.addEventListener('change', () => {
       state.runFilter = runSelect.value || '';
       load(true);
@@ -328,6 +357,8 @@
 
   const fetchRunOnlyBtn = document.getElementById('fetch-run-only');
   if (fetchRunOnlyBtn) {
+    fetchRunOnlyBtn.classList.toggle('active', state.runOnly);
+    fetchRunOnlyBtn.textContent = state.runOnly ? 'Show all claims' : 'Show only these';
     fetchRunOnlyBtn.addEventListener('click', () => {
       state.runOnly = !state.runOnly;
       fetchRunOnlyBtn.classList.toggle('active', state.runOnly);

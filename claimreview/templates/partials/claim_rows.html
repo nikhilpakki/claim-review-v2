@@ -23,7 +23,10 @@
       <input type="checkbox" class="claim-checkbox" value="{{ claim.claim_id }}"
              {% if claim.preselected %}checked{% endif %}>
     </label>
-    <a href="{{ url_for('claims.claim_detail', claim_id=claim.claim_id) }}" class="claim-card">
+    {#- The filter, page and fetch run the reviewer is looking at, carried
+        into the claim so its Back link can return to this list instead of
+        to the whole folder. -#}
+    <a href="{{ url_for('claims.claim_detail', claim_id=claim.claim_id) }}{% if list_query %}?back={{ list_query | urlencode }}{% endif %}" class="claim-card">
       <span class="claim-card-main">
         <span class="claim-id">{{ claim.claim_id }}</span>
         {% if claim.fetch_run %}

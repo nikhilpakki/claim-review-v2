@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Claim {{ claim_id }} - Claim Review{% endblock %}
 {% block content %}
-<a class="back-link" href="{{ url_for('claims.list_claims_view') }}">&larr; Back to claims</a>
+<a class="back-link" href="{{ url_for('claims.list_claims_view') }}{% if back_query %}?{{ back_query }}{% endif %}">&larr; Back to {{ 'the list' if back_query else 'claims' }}</a>
 <h1>Claim {{ claim_id }}</h1>
 
 {#- Personal shortlist. Sits at the top because it is something a reviewer
