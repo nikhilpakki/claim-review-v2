@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Not allowed - Claim Review{% endblock %}
 {% block content %}
-{# Two callers: detection settings, which really are administrators-only, and a
-   rule someone else wrote, which is not an admin question at all - so the
-   heading and text come from `message` when one is given. #}
+{# Several callers: detection settings, which really are administrators-only; a
+   rule someone else wrote, which is not an admin question at all; and the
+   review board, which refuses a change rather than a page - so the heading and
+   text come from `message` when one is given. #}
 <h1>{{ heading or 'Administrators only' }}</h1>
 <p class="hint">
   {% if message %}
@@ -14,6 +15,9 @@
     choose which rules are active for your own view there.
   {% endif %}
 </p>
-<a class="back-link" href="{{ url_for('rules.view_rules') if message else url_for('claims.list_claims_view') }}">&larr;
-  {{ 'Back to rules' if message else 'Back to claims' }}</a>
+{#- Where back goes is the caller's to say. It defaulted to the rules page
+    whenever a message was given, which sent a refused review edit to a page
+    that has nothing to do with it. -#}
+<a class="back-link" href="{{ back_url or (url_for('rules.view_rules') if message else url_for('claims.list_claims_view')) }}">&larr;
+  {{ back_label or ('Back to rules' if message else 'Back to claims') }}</a>
 {% endblock %}

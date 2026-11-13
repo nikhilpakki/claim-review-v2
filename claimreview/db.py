@@ -338,6 +338,35 @@ CREATE TABLE IF NOT EXISTS review_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_review_evidence_review
   ON review_evidence(review_id);
+
+-- What an administrator changed about somebody else's decision.
+--
+-- reviews is otherwise append-only: a reviewer who changes their mind adds a
+-- row, and the newest one stands, so the earlier decision is still readable.
+-- An administrator editing a row breaks that, because the row they edit is
+-- the record - there would be nothing left saying it once said something
+-- else, or who decided that. This is that record.
+--
+-- review_id is kept with no foreign key on purpose: a deletion must leave its
+-- own audit row behind, and a cascade would take it away at exactly the
+-- moment it is the only evidence the decision ever existed.
+CREATE TABLE IF NOT EXISTS review_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id INTEGER,
+  claim_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('edited','deleted')),
+  old_status TEXT,
+  new_status TEXT,
+  old_notes TEXT,
+  new_notes TEXT,
+  reviewer TEXT,
+  reviewer_user_id INTEGER,
+  actor TEXT,
+  actor_user_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_review_audit_review ON review_audit(review_id);
+CREATE INDEX IF NOT EXISTS idx_review_audit_claim ON review_audit(claim_id);
 """
 
 # Columns added after a table's initial release - CREATE TABLE IF NOT EXISTS
