@@ -25,6 +25,7 @@ reached so far and the page says how far that is, rather than quietly
 claiming the folder holds no blurry claims.
 """
 import threading
+import time
 
 from flask import current_app
 
@@ -127,6 +128,7 @@ class Context:
         self.global_fp = rollup_cache.global_fingerprint(self.settings, user_id)
         self.cached = rollup_cache.get_all(user_id)
         self.extract_versions = claim_extract.versions()
+        self.by_id = {c["claim_id"]: c for c in self.claims}
 
     def status(self, claim):
         return processing.get_claim_status(claim["claim_id"],
@@ -206,16 +208,29 @@ def select(ctx, query="", status_filter="all", tags=(), run_filter="",
     """The claims matching the filters, in folder order, without scanning any
     of them.
 
-    Returns (matching, scanned, considered):
+    Returns (matching, scanned, considered, searched_all):
       - `matching` is the filtered claim list,
       - `scanned` is how many of the claims that passed the cheap filters
         have a rollup to judge, which is what a tag filter could see,
-      - `considered` is how many passed the cheap filters at all.
+      - `considered` is how many passed the cheap filters at all,
+      - `searched_all` says a fetch-run filter was set aside to search the
+        whole folder, which the page has to tell the reviewer.
 
     The two counts are reported separately so the page can say "3 of 240
     scanned so far" rather than implying it searched the folder.
     """
     query = (query or "").strip().lower()
+    # Typing a claim id is a search for that claim, so it searches the folder.
+    # Leaving the fetch-run filter on top of it meant the box could only find
+    # claims inside whichever batch happened to be selected - and a reviewer
+    # who has just picked a batch and then pastes an id from elsewhere gets
+    # "no claims match" about a claim that is sitting right there. The filter
+    # is set aside rather than cleared, so it comes back when the box does,
+    # and the page says this is happening instead of leaving the dropdown
+    # looking like it still applies.
+    searched_all = bool(query) and bool(run_filter or run_only)
+    if query:
+        run_filter, run_only = "", False
     tags = [t for t in (tags or []) if t in TAG_FIELDS]
     matching, scanned, considered = [], 0, 0
     for claim in ctx.claims:
@@ -246,7 +261,7 @@ def select(ctx, query="", status_filter="all", tags=(), run_filter="",
             if not all(counts.get(TAG_FIELDS[t]) for t in tags):
                 continue
         matching.append((claim, state))
-    return matching, scanned, considered
+    return matching, scanned, considered, searched_all
 
 
 def page(ctx, matching, offset, limit, preselect=()):
@@ -284,6 +299,65 @@ _warm_slot = threading.Semaphore(1)
 # opposed to queued behind it. Reported by the scan-progress endpoint so the
 # answer to "why is the box busy" does not have to be guessed at.
 _warm_active = 0
+# Page requests reading claims off disk right now. The background pass stands
+# aside while this is non-zero: it holds the folder-reading slot for minutes
+# at a time, and a reviewer picking a fetch run with two claims in it was
+# waiting behind two hundred claims of someone else's disk traffic for a page
+# that needed two.
+_foreground = 0
+_foreground_idle = threading.Condition(_lock)
+# ...but only for so long. With ten reviewers the box is rarely quiet, and a
+# pass that waited for silence would never run at all, leaving the quality
+# filters permanently empty. It yields, then carries on.
+YIELD_SECONDS = 2.0
+# How many of the claims matching the current filter are named to the pass as
+# worth reading first. Enough to cover a fetch run and several pages past it;
+# the rest of the folder follows in its own order.
+PRIORITY_CLAIMS = 100
+
+
+class foreground:
+    """Marks a request a reviewer is sitting in front of.
+
+    Wrapped around the whole of a claims-list request, not just the part that
+    reads claims: building the Context queries the database and listing the
+    folder reads a directory, and measured, those are most of what the
+    reviewer waits for - gating only the scan left the pass competing for
+    exactly the stretch that mattered.
+    """
+
+    def __enter__(self):
+        global _foreground
+        with _lock:
+            _foreground += 1
+        return self
+
+    def __exit__(self, *_exc):
+        global _foreground
+        with _foreground_idle:
+            _foreground = max(0, _foreground - 1)
+            if not _foreground:
+                _foreground_idle.notify_all()
+        return False
+
+
+def _yield_to_requests(state):
+    """Wait, briefly, for the reviewers' own pages to finish reading."""
+    if not _foreground:
+        return
+    deadline = time.monotonic() + YIELD_SECONDS
+    with _foreground_idle:
+        while _foreground and not state["stop"]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            _foreground_idle.wait(remaining)
+
+
+def waiting_for_requests():
+    """Whether the background pass is currently standing aside."""
+    with _lock:
+        return _foreground > 0
 
 
 def active_passes():
@@ -303,7 +377,7 @@ def warm_state(root, user_id):
                 "completed": bool(state.get("completed"))}
 
 
-def warm_start(app, root, user_id, global_fp=None, total=None):
+def warm_start(app, root, user_id, global_fp=None, total=None, first=()):
     """Start the background pass for this root, unless there is no work.
 
     Skipped when one is already going, and when the last one finished over
@@ -322,12 +396,16 @@ def warm_start(app, root, user_id, global_fp=None, total=None):
         key = (root, user_id)
         state = _warmers.get(key)
         if state and state["running"]:
+            # The pass is already going, and the reviewer has just told us
+            # what they are looking at - a fetch run, a search, a page. It
+            # reads those next instead of finishing the folder first.
+            state["first"] = list(first or ())
             return state
         if (state and state.get("completed")
                 and state.get("fp") == global_fp and state.get("total") == total):
             return state
         state = {"running": True, "scanned": 0, "total": total or 0, "stop": False,
-                 "completed": False, "fp": global_fp}
+                 "completed": False, "fp": global_fp, "first": list(first or ())}
         for (other_root, _other_user), other in _warmers.items():
             # Only a pass over a *different folder* is no longer wanted. This
             # compared the whole key, so a second reviewer opening the same
@@ -340,6 +418,30 @@ def warm_start(app, root, user_id, global_fp=None, total=None):
                              name=f"claim-warm-{user_id}", daemon=True)
     thread.start()
     return state
+
+
+def _next_claim(ctx, state, done, cursor):
+    """The next claim to read, and where folder order has got to.
+
+    Whatever the reviewer is looking at comes first, re-read from the state
+    on every claim so that picking a fetch run part-way through the pass
+    redirects it rather than joining a queue behind the whole folder. Then
+    the folder in its own order, with `cursor` carrying the position so this
+    stays one walk rather than one per claim.
+    """
+    with _lock:
+        first = list(state.get("first") or ())
+    for claim_id in first:
+        if claim_id not in done:
+            claim = ctx.by_id.get(claim_id)
+            if claim is not None:
+                return claim, cursor
+    while cursor < len(ctx.claims):
+        claim = ctx.claims[cursor]
+        cursor += 1
+        if claim["claim_id"] not in done:
+            return claim, cursor
+    return None, cursor
 
 
 def _warm(app, root, user_id, state):
@@ -364,7 +466,16 @@ def _warm(app, root, user_id, state):
                 # and what matters is the fingerprint the pass actually used.
                 state["fp"] = ctx.global_fp
             fresh = []
-            for claim in ctx.claims:
+            done, cursor = set(), 0
+            while not state["stop"]:
+                claim, cursor = _next_claim(ctx, state, done, cursor)
+                if claim is None:
+                    break
+                done.add(claim["claim_id"])
+                # Checked here rather than once at the top: a pass runs for
+                # minutes, and the reviewers it should defer to arrive during
+                # it, not before it.
+                _yield_to_requests(state)
                 if state["stop"]:
                     break
                 try:

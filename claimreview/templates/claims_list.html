@@ -93,10 +93,25 @@
   </div>
 </div>
 
+{#- A page turn, a filter or a fetch run replaces the whole list, and until
+    the answer arrives the rows and counts on screen are the previous one.
+    Saying so is the difference between "working on it" and a page that looks
+    frozen on the old numbers. -#}
+<p class="hint claim-loading" id="claim-loading" hidden>Loading claims&hellip;</p>
+
 {#- How much of the folder the background pass has read. The quality filters
     can only search what it has reached, and saying so is the difference
     between "no blurry claims" and "none found yet". -#}
 <p class="hint scan-progress" id="scan-progress" hidden></p>
+
+{#- A claim id in the search box searches the whole folder, so the fetch run
+    still shown in the dropdown is not applying. Saying so beats letting the
+    two contradict each other on screen. -#}
+<p class="hint search-scope" id="search-scope"
+   {% if not page.searched_all %}hidden{% endif %}>
+  Searching all {{ page.folder_total }} claims &mdash; the fetch ID filter is
+  set aside while you search by claim ID.
+</p>
 
 <div class="batch-bar">
   <label class="select-all-label">

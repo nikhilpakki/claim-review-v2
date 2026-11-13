@@ -43,13 +43,30 @@
 
   let inFlight = null;
   const loadError = document.getElementById('claim-load-error');
+  const loadingNote = document.getElementById('claim-loading');
+  const batchBar = document.querySelector('.batch-bar');
+
+  // The rows, the counts and the batch bar all describe the answer that is
+  // on screen. While a new one is being fetched they describe the old
+  // question, so they are dimmed and taken out of reach rather than left
+  // looking live - which is what made a slow page read as a frozen one.
+  function busy(on) {
+    list.classList.toggle('loading', on);
+    if (batchBar) batchBar.classList.toggle('loading', on);
+    // Looked up here rather than closed over: the pager's own const is
+    // declared further down, and a function hoisted above it must not read
+    // the binding before it exists.
+    const pagerEl = document.getElementById('claim-pager');
+    if (pagerEl) pagerEl.classList.toggle('loading', on);
+    if (loadingNote) loadingNote.hidden = !on;
+  }
 
   function load(resetOffset) {
     if (resetOffset) state.offset = 0;
     const query = params().toString();
     const token = {};
     inFlight = token;
-    list.classList.add('loading');
+    busy(true);
     fetch('/api/claims/page?' + query)
       .then((r) => r.json().then((data) => ({ ok: r.ok, code: r.status, data })))
       .then(({ ok, code, data }) => {
@@ -72,7 +89,7 @@
       .finally(() => {
         if (inFlight === token) {
           inFlight = null;
-          list.classList.remove('loading');
+          busy(false);
         }
       });
   }
@@ -105,10 +122,15 @@
   }
 
   const countSummary = document.getElementById('claim-count-summary');
+  const searchScope = document.getElementById('search-scope');
   const readySummary = document.getElementById('claim-ready-summary');
   const scanProgress = document.getElementById('scan-progress');
 
   function updateCounts(data) {
+    // The dropdown still shows the fetch run, because the search box will be
+    // emptied again and it should come back. While it is not applying, the
+    // page has to say which of the two is in force.
+    if (searchScope) searchScope.hidden = !data.searched_all;
     if (countSummary) {
       const folder = Number(countSummary.dataset.folderTotal || 0);
       countSummary.textContent = data.matching === folder

@@ -74,7 +74,7 @@ def _page_params():
 
 def _claims_page(ctx, params, preselect):
     """One page of claims plus the counts the page needs to describe itself."""
-    matching, scanned, considered = claim_index.select(
+    matching, scanned, considered, searched_all = claim_index.select(
         ctx, query=params["query"], status_filter=params["status_filter"],
         tags=params["tags"], run_filter=params["run_filter"],
         run_only=params["run_only"], preselect=preselect)
@@ -95,6 +95,14 @@ def _claims_page(ctx, params, preselect):
         "warming": warm["running"],
         "ready": sum(1 for _claim, state in matching
                      if state["status"] == "completed"),
+        # A claim id in the search box searches the whole folder, so a fetch
+        # run that was selected is not applying. The dropdown still shows it,
+        # so the page has to say so rather than let the two contradict.
+        "searched_all": searched_all,
+        # The claims the reviewer is actually looking at, for the background
+        # pass to read before the rest of the folder.
+        "priority_ids": [claim["claim_id"] for claim, _state
+                         in matching[:claim_index.PRIORITY_CLAIMS]],
     }
 
 
@@ -104,16 +112,21 @@ def list_claims_view():
     if not root:
         return redirect(url_for("browse.browse"))
     user_id = users.current_user_id()
-    ctx = claim_index.Context(root, user_id)
-    preselect, fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
     params = _page_params()
-    data = _claims_page(ctx, params, preselect)
+    # Everything the reviewer is waiting on, declared as such: the background
+    # pass stands aside for the whole of it.
+    with claim_index.foreground():
+        ctx = claim_index.Context(root, user_id)
+        preselect, fetch_run = _fetch_run_context(
+            [c["claim_id"] for c in ctx.claims])
+        data = _claims_page(ctx, params, preselect)
 
     # Started only after the page's own fifteen claims are in hand, so the
     # background pass is never competing with the request the reviewer is
     # waiting on for the same folder.
     claim_index.warm_start(current_app._get_current_object(), root, user_id,
-                           ctx.global_fp, len(ctx.claims))
+                           ctx.global_fp, len(ctx.claims),
+                           first=data["priority_ids"])
 
     fetch_run_options = fetch_runs.runs_with_claims(limit=25)
     # Only offer runs whose claims are actually in this folder - a run that
@@ -153,13 +166,17 @@ def api_claims_page():
     if not root:
         return jsonify({"error": "No active root"}), 400
     user_id = users.current_user_id()
-    ctx = claim_index.Context(root, user_id)
-    preselect, _fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
-    data = _claims_page(ctx, _page_params(), preselect)
+    with claim_index.foreground():
+        ctx = claim_index.Context(root, user_id)
+        preselect, _fetch_run = _fetch_run_context(
+            [c["claim_id"] for c in ctx.claims])
+        data = _claims_page(ctx, _page_params(), preselect)
     claim_index.warm_start(current_app._get_current_object(), root, user_id,
-                           ctx.global_fp, len(ctx.claims))
+                           ctx.global_fp, len(ctx.claims),
+                           first=data["priority_ids"])
     return jsonify({
-        **{k: v for k, v in data.items() if k != "claims"},
+        **{k: v for k, v in data.items()
+           if k not in ("claims", "priority_ids")},
         "rows_html": render_template("partials/claim_rows.html",
                                      claims=data["claims"], settings=ctx.settings),
     })
@@ -177,13 +194,15 @@ def api_matching_ids():
     if not root:
         return jsonify({"error": "No active root"}), 400
     user_id = users.current_user_id()
-    ctx = claim_index.Context(root, user_id)
-    preselect, _fetch_run = _fetch_run_context([c["claim_id"] for c in ctx.claims])
     params = _page_params()
-    matching, _scanned, _considered = claim_index.select(
-        ctx, query=params["query"], status_filter=params["status_filter"],
-        tags=params["tags"], run_filter=params["run_filter"],
-        run_only=params["run_only"], preselect=preselect)
+    with claim_index.foreground():
+        ctx = claim_index.Context(root, user_id)
+        preselect, _fetch_run = _fetch_run_context(
+            [c["claim_id"] for c in ctx.claims])
+        matching, _scanned, _considered, _searched_all = claim_index.select(
+            ctx, query=params["query"], status_filter=params["status_filter"],
+            tags=params["tags"], run_filter=params["run_filter"],
+            run_only=params["run_only"], preselect=preselect)
     return jsonify({"claim_ids": [claim["claim_id"] for claim, _state in matching]})
 
 

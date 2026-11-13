@@ -781,3 +781,36 @@ a.ocr-lookup-link { color: var(--accent); text-decoration: underline; cursor: po
 .match-fuzzy .settings-field {
   margin-top: 0.6rem;
 }
+
+/* --- the claims list while a page request is in flight -------------------
+   Picking a fetch run replaces every row, and until the answer comes back
+   what is on screen - the rows, the count, "select all 242 matching" - is
+   the answer to the previous question. The class was being set already and
+   styled nowhere, so a slow request looked like a frozen page. */
+.claim-loading {
+    color: var(--muted, #667085);
+}
+.claim-loading::before {
+    content: "";
+    display: inline-block;
+    width: .7em;
+    height: .7em;
+    margin-right: .5em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: claim-spin .7s linear infinite;
+    vertical-align: -1px;
+}
+@keyframes claim-spin { to { transform: rotate(360deg); } }
+/* Someone who has asked the page a new question should not be able to tick
+   boxes against the old answer. */
+.claim-list.loading,
+.batch-bar.loading,
+#claim-pager.loading {
+    opacity: .45;
+    pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+    .claim-loading::before { animation: none; }
+}
