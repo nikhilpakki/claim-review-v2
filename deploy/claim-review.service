@@ -1,6 +1,19 @@
 # systemd unit for the claim review tool.
+#   sudo pip3 install -r /opt/claim-review/requirements.txt
 #   sudo cp deploy/claim-review.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now claim-review
+#
+# No virtualenv: the packages are installed against the system python3, and
+# ExecStart runs gunicorn through it. `python3 -m gunicorn` rather than the
+# `gunicorn` script on purpose - the script's location depends on how pip was
+# invoked (/usr/local/bin for a root install, ~/.local/bin for a --user one),
+# and systemd needs an absolute path that exists either way. Check it before
+# installing the unit:
+#
+#   /usr/bin/python3 -m gunicorn --version
+#
+# If that python3 is not the one the packages went to, point ExecStart at the
+# one that is - `which python3` under the ec2-user account.
 #
 # Replaces running the dev server inside tmux: survives logout and reboot,
 # restarts on crash, and writes to the journal instead of a scrollback buffer.
@@ -23,7 +36,7 @@ EnvironmentFile=/opt/claim-review/.env
 # network read would otherwise never be replaced - but it must stay well above
 # the slowest honest request, because a worker killed mid-flight loses the
 # in-memory progress every /fetch and /process page is polling for.
-ExecStart=/opt/claim-review/.venv/bin/gunicorn \
+ExecStart=/usr/bin/python3 -m gunicorn \
     --workers 1 \
     --threads 16 \
     --worker-class gthread \

@@ -9,12 +9,13 @@ BANNER = """
    This is the DEVELOPMENT server. One process, no request queue, and it
    is not built to be shared. On the EC2 box run it under gunicorn:
 
+       sudo pip3 install -r requirements.txt
        sudo cp deploy/claim-review.service /etc/systemd/system/
        sudo systemctl daemon-reload && sudo systemctl enable --now claim-review
 
-   or, to try it without systemd:
+   or, to try it without systemd, from this folder:
 
-       .venv/bin/gunicorn --workers 1 --threads 16 --bind 127.0.0.1:5000 wsgi:app
+       python3 -m gunicorn --worker-class gthread --workers 1 --threads 16 --bind 127.0.0.1:5000 wsgi:app
 
    The worker count must stay 1 - see wsgi.py.
   ---------------------------------------------------------------------
