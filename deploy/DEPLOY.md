@@ -6,10 +6,14 @@ virtualenv: everything installs against the system `python3`.
 Set this once per shell so the commands below can be pasted as they are:
 
 ```bash
-APP_DIR=/opt/claim-review          # wherever the checkout actually is
-APP_USER=ec2-user                  # 'ubuntu' on an Ubuntu AMI
+APP_DIR=/home/ec2-user/nikhil-workspace/claim-review-v3-beta
+APP_USER=ec2-user
 cd "$APP_DIR"
 ```
+
+These are the paths on the box as it stands, and they are what
+`deploy/claim-review.service` already carries - so if the folder has not
+moved, the unit installs with no editing.
 
 ## 1. Find out what is true now
 
@@ -27,6 +31,35 @@ The second one matters most: that path is the live database, with every user
 account, review and rule in it. If the service runs as a different user than
 the one that has been running `python3 app.py`, it will not be able to write
 to it.
+
+## 1b. Check this folder is the code these files came from
+
+The folder is named `claim-review-v3-beta`, and the work described here was
+committed to the `claim-review-v2` repository. Before pulling anything, find
+out what is in there:
+
+```bash
+git -C "$APP_DIR" remote -v && git -C "$APP_DIR" log --oneline -3
+```
+
+Three possible answers:
+
+- **A checkout of this repository.** `git pull` in step 3 is the right move.
+- **A checkout of a different repository (a real v3).** Do not pull - you
+  would overwrite a different codebase. Deploy this one to its own folder
+  instead, on a different port, and point the unit at it.
+- **"not a git repository".** The folder was copied or unzipped onto the box.
+  Skip step 3's `git pull` and upload the new files instead, keeping `.env`
+  and `var/` exactly as they are:
+
+  ```bash
+  # from your laptop, in the checkout
+  rsync -av --exclude '.git' --exclude '.env' --exclude 'var/' \
+      --exclude '__pycache__' ./ "$APP_USER@<instance>:$APP_DIR/"
+  ```
+
+  `var/` holds the database and the Textract cache, `.env` holds the
+  credentials; neither is in the repository, and both must survive the copy.
 
 ## 2. Back the database up
 
@@ -113,16 +146,22 @@ on this route; the fetch page posts registration-id CSVs through it.
 
 ## 6. Install the service
 
-`deploy/claim-review.service` carries defaults that are probably not yours.
-Open it and check three things: `WorkingDirectory` and `EnvironmentFile` point
-at `$APP_DIR`, `User`/`Group` are `$APP_USER`, and `ExecStart` names the
-python3 from step 4.
+`deploy/claim-review.service` is already filled in for the path above.
+Confirm that is still where the code is, that `User`/`Group` match
+`$APP_USER`, and that `ExecStart` names the python3 from step 4.
 
 ```bash
-sudo sed -e "s#/opt/claim-review#$APP_DIR#g" -e "s#ec2-user#$APP_USER#g" \
-    deploy/claim-review.service > /tmp/claim-review.service
-sudo install -m 644 /tmp/claim-review.service /etc/systemd/system/claim-review.service
+grep -E '^(User|Group|WorkingDirectory|EnvironmentFile|ExecStart)=' deploy/claim-review.service
+sudo install -m 644 deploy/claim-review.service /etc/systemd/system/claim-review.service
 sudo systemctl daemon-reload
+```
+
+If the checkout is somewhere else, rewrite the paths on the way in rather
+than editing the copy in the repository:
+
+```bash
+sed "s#/home/ec2-user/nikhil-workspace/claim-review-v3-beta#$APP_DIR#g" \
+    deploy/claim-review.service | sudo tee /etc/systemd/system/claim-review.service >/dev/null
 ```
 
 Make sure the runtime files belong to the account the service runs as:
@@ -158,6 +197,9 @@ reviews are the real test that step 1 found the right database.
 
 `journalctl -u claim-review -n 50` says which:
 
+- `Failed to load environment files` - there is no `.env` in `$APP_DIR`.
+  The unit will not start without it, deliberately: it holds the warehouse
+  credentials, and starting without them fails later and less clearly.
 - `203/EXEC` - `ExecStart` path is wrong; redo step 4.
 - `Permission denied` on the database or `var/` - redo the `chown` in step 6.
 - `Address already in use` - the old dev server is still up; redo step 7.

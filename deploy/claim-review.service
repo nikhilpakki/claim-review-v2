@@ -1,7 +1,14 @@
 # systemd unit for the claim review tool.
-#   sudo pip3 install -r /opt/claim-review/requirements.txt
+#   sudo pip3 install -r /home/ec2-user/nikhil-workspace/claim-review-v3-beta/requirements.txt
 #   sudo cp deploy/claim-review.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now claim-review
+#
+# Paths are the ones on the box as it stands:
+#   /home/ec2-user/nikhil-workspace/claim-review-v3-beta
+# running as ec2-user. Change WorkingDirectory, EnvironmentFile and User
+# together if the checkout moves. Both paths are that one folder: gunicorn
+# imports wsgi from the working directory, and the .env systemd reads here is
+# the same file config.py loads from beside itself.
 #
 # No virtualenv: the packages are installed against the system python3, and
 # ExecStart runs gunicorn through it. `python3 -m gunicorn` rather than the
@@ -26,13 +33,13 @@ Wants=network-online.target
 Type=simple
 User=ec2-user
 Group=ec2-user
-WorkingDirectory=/opt/claim-review
+WorkingDirectory=/home/ec2-user/nikhil-workspace/claim-review-v3-beta
 # Set before EnvironmentFile so .env can override it; with no value here a
 # missing CLAIM_REVIEW_BIND would expand to nothing and gunicorn would start
 # with a bare --bind. Confirm what it resolved to with
 #   systemctl show -p Environment claim-review
 Environment=CLAIM_REVIEW_BIND=127.0.0.1:5000
-EnvironmentFile=/opt/claim-review/.env
+EnvironmentFile=/home/ec2-user/nikhil-workspace/claim-review-v3-beta/.env
 
 # One worker, many threads - see wsgi.py for why the worker count must stay 1.
 # A request never does the long work: fetching, processing and the folder scan
