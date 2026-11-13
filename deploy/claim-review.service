@@ -36,6 +36,13 @@ EnvironmentFile=/opt/claim-review/.env
 # network read would otherwise never be replaced - but it must stay well above
 # the slowest honest request, because a worker killed mid-flight loses the
 # in-memory progress every /fetch and /process page is polling for.
+#
+# --bind 127.0.0.1:5000 means nginx is the only way in, which is what
+# deploy/nginx-claim-review.conf is for: reviewers use port 80 and the app
+# is not exposed directly. If nginx is not installed, nothing outside the
+# box can reach this and the tool will look dead - either install nginx, or
+# change the bind below to 0.0.0.0:5000 and open 5000 in the security group.
+# Binding 0.0.0.0 without nginx also means no TLS and no upload limit.
 ExecStart=/usr/bin/python3 -m gunicorn \
     --workers 1 \
     --threads 16 \
